@@ -41,3 +41,4 @@ cortex-*.tar
 # Environment variables
 .env*
 !.env.example
+priv/scrollback/
