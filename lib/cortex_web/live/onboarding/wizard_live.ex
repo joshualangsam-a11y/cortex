@@ -77,20 +77,20 @@ defmodule CortexWeb.Onboarding.WizardLive do
                    hover:border-[#ffd04a]/40 hover:bg-[#ffd04a]/5 transition-all duration-200
                    disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            <%= if @scanning, do: "Scanning...", else: "Scan" %>
+            {if @scanning, do: "Scanning...", else: "Scan"}
           </button>
         </div>
 
         <%= if @found_projects != [] do %>
           <div class="flex items-center justify-between mb-3">
             <span class="text-[#5a5a5a] text-xs font-mono">
-              Found <%= length(@found_projects) %> projects
+              Found {length(@found_projects)} projects
             </span>
             <button
               phx-click="select_all"
               class="text-[#ffd04a]/60 text-xs font-mono hover:text-[#ffd04a] transition-colors"
             >
-              <%= if all_selected?(@found_projects), do: "Deselect all", else: "Select all" %>
+              {if all_selected?(@found_projects), do: "Deselect all", else: "Select all"}
             </button>
           </div>
 
@@ -109,12 +109,12 @@ defmodule CortexWeb.Onboarding.WizardLive do
               />
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
-                  <span class="text-[#e8dcc0] font-mono text-sm font-medium"><%= project.name %></span>
+                  <span class="text-[#e8dcc0] font-mono text-sm font-medium">{project.name}</span>
                   <span class={"px-1.5 py-0.5 rounded text-[10px] font-mono #{type_color(project.type)}"}>
-                    <%= project.type %>
+                    {project.type}
                   </span>
                 </div>
-                <div class="text-[#3a3a3a] text-xs font-mono truncate"><%= project.path %></div>
+                <div class="text-[#3a3a3a] text-xs font-mono truncate">{project.path}</div>
               </div>
             </div>
           </div>
@@ -135,7 +135,7 @@ defmodule CortexWeb.Onboarding.WizardLive do
                    hover:border-[#ffd04a]/40 hover:bg-[#ffd04a]/5 transition-all duration-200
                    disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            Add <%= selected_count(@found_projects) %> selected &rarr;
+            Add {selected_count(@found_projects)} selected &rarr;
           </button>
         </div>
       </div>
@@ -157,9 +157,9 @@ defmodule CortexWeb.Onboarding.WizardLive do
           >
             <div class="flex items-center gap-2 mb-3">
               <span class={"px-1.5 py-0.5 rounded text-[10px] font-mono #{type_color(project.type)}"}>
-                <%= project.type %>
+                {project.type}
               </span>
-              <span class="text-[#3a3a3a] text-xs font-mono truncate"><%= project.path %></span>
+              <span class="text-[#3a3a3a] text-xs font-mono truncate">{project.path}</span>
             </div>
 
             <div class="grid grid-cols-2 gap-3">
@@ -210,7 +210,7 @@ defmodule CortexWeb.Onboarding.WizardLive do
             <div class="mt-3">
               <label class="text-[#5a5a5a] text-xs font-mono mb-1 flex justify-between">
                 <span>Priority weight</span>
-                <span class="text-[#ffd04a]"><%= project.priority %></span>
+                <span class="text-[#ffd04a]">{project.priority}</span>
               </label>
               <input
                 type="range"
@@ -339,8 +339,9 @@ defmodule CortexWeb.Onboarding.WizardLive do
   end
 
   def handle_event("finish", _params, socket) do
-    save_config(socket.assigns.configured_projects)
-    {:noreply, push_navigate(socket, to: "/")}
+    user_id = get_user_id(socket)
+    save_projects_to_db(socket.assigns.configured_projects, user_id)
+    {:noreply, push_navigate(socket, to: "/dashboard")}
   end
 
   @impl true
@@ -387,21 +388,25 @@ defmodule CortexWeb.Onboarding.WizardLive do
 
   # -- Persistence --
 
-  defp save_config(projects) do
-    config =
-      Enum.map(projects, fn p ->
-        %{
-          name: p.name,
-          path: p.path,
-          type: p.type,
-          dev_command: p.dev_command,
-          priority: p.priority,
-          port: p.port
-        }
-      end)
+  defp save_projects_to_db(projects, user_id) do
+    Enum.each(projects, fn p ->
+      Cortex.Projects.create_user_project(user_id, %{
+        "name" => p.name,
+        "path" => p.path,
+        "project_type" => p.type,
+        "dev_command" => p.dev_command,
+        "priority_weight" => p.priority,
+        "port" => p.port,
+        "status" => "active"
+      })
+    end)
+  end
 
-    path = Path.join(:code.priv_dir(:cortex), "user_config.json")
-    File.write!(path, Jason.encode!(%{projects: config}, pretty: true))
+  defp get_user_id(socket) do
+    case socket.assigns[:current_user] do
+      %{id: id} -> id
+      _ -> "00000000-0000-0000-0000-000000000001"
+    end
   end
 
   # -- Helpers --
@@ -435,7 +440,7 @@ defmodule CortexWeb.Onboarding.WizardLive do
 
         <%!-- Card --%>
         <div class="bg-[#080808] border border-[#1a1a1a] rounded-lg overflow-hidden">
-          <%= render_slot(@inner_block) %>
+          {render_slot(@inner_block)}
         </div>
       </div>
     </div>
@@ -449,11 +454,11 @@ defmodule CortexWeb.Onboarding.WizardLive do
         <%= if @num < @current do %>
           &#10003;
         <% else %>
-          <%= @num %>
+          {@num}
         <% end %>
       </div>
       <span class={"text-xs font-mono #{if @num == @current, do: "text-[#e8dcc0]", else: "text-[#3a3a3a]"}"}>
-        <%= @label %>
+        {@label}
       </span>
     </div>
     """

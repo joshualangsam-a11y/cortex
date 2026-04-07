@@ -47,14 +47,14 @@ defmodule CortexWeb.Settings.ProjectsLive do
               disabled={@importing}
               class="px-3 py-1.5 text-xs rounded-md border border-[#1a1a1a] text-[#e8dcc0] hover:border-[#ffd04a] hover:text-[#ffd04a] transition-colors disabled:opacity-50"
             >
-              <%= if @importing, do: "Importing...", else: "Import from CLAUDE.md" %>
+              {if @importing, do: "Importing...", else: "Import from CLAUDE.md"}
             </button>
             <button
               phx-click="scan_filesystem"
               disabled={@scanning}
               class="px-3 py-1.5 text-xs rounded-md border border-[#1a1a1a] text-[#e8dcc0] hover:border-[#ffd04a] hover:text-[#ffd04a] transition-colors disabled:opacity-50"
             >
-              <%= if @scanning, do: "Scanning...", else: "Scan Filesystem" %>
+              {if @scanning, do: "Scanning...", else: "Scan Filesystem"}
             </button>
             <button
               phx-click="show_add_form"
@@ -64,8 +64,8 @@ defmodule CortexWeb.Settings.ProjectsLive do
             </button>
           </div>
         </div>
-
-        <!-- Scan Results -->
+        
+    <!-- Scan Results -->
         <%= if @scan_results != [] do %>
           <div class="mb-6 border border-[#1a1a1a] rounded-md bg-[#0a0a0a] p-4">
             <div class="flex items-center justify-between mb-3">
@@ -103,12 +103,12 @@ defmodule CortexWeb.Settings.ProjectsLive do
             </div>
           </div>
         <% end %>
-
-        <!-- Add/Edit Form -->
+        
+    <!-- Add/Edit Form -->
         <%= if @show_form do %>
           <div class="mb-6 border border-[#1a1a1a] rounded-md bg-[#0a0a0a] p-4">
             <h3 class="text-sm font-medium text-[#ffd04a] mb-4">
-              <%= if @editing_project, do: "Edit Project", else: "Add Project" %>
+              {if @editing_project, do: "Edit Project", else: "Add Project"}
             </h3>
             <.form
               for={@changeset}
@@ -129,8 +129,8 @@ defmodule CortexWeb.Settings.ProjectsLive do
                   />
                   <.form_error changeset={@changeset} field={:name} />
                 </div>
-
-                <!-- Path -->
+                
+    <!-- Path -->
                 <div>
                   <label class="block text-xs text-[#5a5a5a] mb-1">Path</label>
                   <div class="flex gap-2">
@@ -152,8 +152,8 @@ defmodule CortexWeb.Settings.ProjectsLive do
                   </div>
                   <.form_error changeset={@changeset} field={:path} />
                 </div>
-
-                <!-- Status -->
+                
+    <!-- Status -->
                 <div>
                   <label class="block text-xs text-[#5a5a5a] mb-1">Status</label>
                   <select
@@ -170,8 +170,8 @@ defmodule CortexWeb.Settings.ProjectsLive do
                     <% end %>
                   </select>
                 </div>
-
-                <!-- Port -->
+                
+    <!-- Port -->
                 <div>
                   <label class="block text-xs text-[#5a5a5a] mb-1">Port</label>
                   <input
@@ -184,8 +184,8 @@ defmodule CortexWeb.Settings.ProjectsLive do
                   />
                   <.form_error changeset={@changeset} field={:port} />
                 </div>
-
-                <!-- Project Type -->
+                
+    <!-- Project Type -->
                 <div>
                   <label class="block text-xs text-[#5a5a5a] mb-1">Type</label>
                   <select
@@ -203,8 +203,8 @@ defmodule CortexWeb.Settings.ProjectsLive do
                     <% end %>
                   </select>
                 </div>
-
-                <!-- Dev Command -->
+                
+    <!-- Dev Command -->
                 <div>
                   <label class="block text-xs text-[#5a5a5a] mb-1">Dev Command</label>
                   <input
@@ -216,8 +216,8 @@ defmodule CortexWeb.Settings.ProjectsLive do
                   />
                 </div>
               </div>
-
-              <!-- Priority Weight -->
+              
+    <!-- Priority Weight -->
               <div>
                 <label class="block text-xs text-[#5a5a5a] mb-1">
                   Priority Weight: {Phoenix.HTML.Form.input_value(@changeset, :priority_weight) || 50}
@@ -235,8 +235,8 @@ defmodule CortexWeb.Settings.ProjectsLive do
                   <span>High</span>
                 </div>
               </div>
-
-              <!-- Description -->
+              
+    <!-- Description -->
               <div>
                 <label class="block text-xs text-[#5a5a5a] mb-1">Description</label>
                 <input
@@ -247,14 +247,14 @@ defmodule CortexWeb.Settings.ProjectsLive do
                   placeholder="Brief description"
                 />
               </div>
-
-              <!-- Actions -->
+              
+    <!-- Actions -->
               <div class="flex gap-2 pt-2">
                 <button
                   type="submit"
                   class="px-4 py-2 text-xs rounded-md bg-[#ffd04a] text-[#050505] font-medium hover:opacity-90 transition-opacity"
                 >
-                  <%= if @editing_project, do: "Update", else: "Create" %>
+                  {if @editing_project, do: "Update", else: "Create"}
                 </button>
                 <button
                   type="button"
@@ -267,8 +267,8 @@ defmodule CortexWeb.Settings.ProjectsLive do
             </.form>
           </div>
         <% end %>
-
-        <!-- Projects Table -->
+        
+    <!-- Projects Table -->
         <%= if @projects == [] do %>
           <div class="border border-[#1a1a1a] rounded-md bg-[#0a0a0a] p-12 text-center">
             <p class="text-[#5a5a5a] text-sm mb-4">No projects configured</p>
@@ -545,10 +545,11 @@ defmodule CortexWeb.Settings.ProjectsLive do
 
   # -- Helpers --
 
-  defp get_user_id(_socket) do
-    # TODO: Pull from auth session once auth is wired up
-    # For now, use a deterministic placeholder UUID
-    "00000000-0000-0000-0000-000000000001"
+  defp get_user_id(socket) do
+    case socket.assigns[:current_user] do
+      %{id: id} -> id
+      _ -> "00000000-0000-0000-0000-000000000001"
+    end
   end
 
   defp status_badge_class("active"), do: "bg-[#5ea85e]/20 text-[#5ea85e]"
