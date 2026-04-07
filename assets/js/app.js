@@ -4,6 +4,7 @@ import { LiveSocket } from "phoenix_live_view";
 import topbar from "../vendor/topbar";
 import TerminalHook from "./hooks/terminal_hook";
 import CommandPaletteHook from "./hooks/command_palette_hook";
+import DragHook from "./hooks/drag_hook";
 
 let csrfToken = document
   .querySelector("meta[name='csrf-token']")
@@ -15,6 +16,7 @@ let liveSocket = new LiveSocket("/live", Socket, {
   hooks: {
     Terminal: TerminalHook,
     CommandPalette: CommandPaletteHook,
+    Drag: DragHook,
   },
 });
 

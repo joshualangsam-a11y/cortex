@@ -33,6 +33,45 @@ defmodule Cortex.Terminal.Scrollback do
     |> IO.iodata_to_binary()
   end
 
+  # --- Disk persistence ---
+
+  @scrollback_dir "priv/scrollback"
+
+  def save_to_disk(%__MODULE__{} = scrollback, session_id) do
+    dir = scrollback_dir()
+    File.mkdir_p!(dir)
+
+    path = Path.join(dir, "#{session_id}.bin")
+    scrollback |> to_binary() |> then(&File.write!(path, &1))
+    :ok
+  end
+
+  def load_from_disk(session_id) do
+    session_id
+    |> scrollback_path()
+    |> File.read()
+    |> case do
+      {:ok, data} -> data
+      {:error, _} -> nil
+    end
+  end
+
+  def delete_from_disk(session_id) do
+    session_id
+    |> scrollback_path()
+    |> File.rm()
+
+    :ok
+  end
+
+  defp scrollback_path(session_id) do
+    Path.join(scrollback_dir(), "#{session_id}.bin")
+  end
+
+  defp scrollback_dir do
+    Application.app_dir(:cortex, @scrollback_dir)
+  end
+
   defp trim(%__MODULE__{max_bytes: max_bytes} = sb) do
     binary = to_binary(sb)
     trimmed = binary_part(binary, byte_size(binary) - max_bytes, max_bytes)

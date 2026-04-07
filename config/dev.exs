@@ -1,5 +1,7 @@
 import Config
 
+config :cortex, env: :dev
+
 # Configure your database
 config :cortex, Cortex.Repo,
   username: "joshualangsam",

@@ -4,9 +4,16 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="csrf-token" content={get_csrf_token()} />
-    <.live_title default="Cortex">
+    <.live_title suffix=" - Cortex">
       {assigns[:page_title]}
     </.live_title>
+    <meta :if={assigns[:page_description]} name="description" content={assigns[:page_description]} />
+    <meta :if={assigns[:page_title]} property="og:title" content={"#{assigns[:page_title]} - Cortex"} />
+    <meta :if={assigns[:page_description]} property="og:description" content={assigns[:page_description]} />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta :if={assigns[:page_title]} name="twitter:title" content={"#{assigns[:page_title]} - Cortex"} />
+    <meta :if={assigns[:page_description]} name="twitter:description" content={assigns[:page_description]} />
     <link phx-track-static rel="stylesheet" href={~p"/assets/css/app.css"} />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
     <script defer phx-track-static type="text/javascript" src={~p"/assets/js/app.js"}>

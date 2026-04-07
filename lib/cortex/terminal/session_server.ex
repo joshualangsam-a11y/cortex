@@ -55,6 +55,9 @@ defmodule Cortex.Terminal.SessionServer do
     {:via, Registry, {Cortex.Terminal.SessionRegistry, id}}
   end
 
+  # Flush scrollback to disk every 30 seconds
+  @flush_interval_ms 30_000
+
   # Server callbacks
 
   @impl true
@@ -85,6 +88,17 @@ defmodule Cortex.Terminal.SessionServer do
       |> Map.put("LANG", "en_US.UTF-8")
       |> Map.put("LC_ALL", "en_US.UTF-8")
 
+    # Restore scrollback from disk if available
+    scrollback =
+      case Scrollback.load_from_disk(id) do
+        nil ->
+          Scrollback.new()
+
+        data ->
+          Logger.info("Restored scrollback from disk for session #{id}")
+          Scrollback.new() |> Scrollback.push(data)
+      end
+
     case ExPTY.spawn(shell, [],
            cols: cols,
            rows: rows,
@@ -95,6 +109,9 @@ defmodule Cortex.Terminal.SessionServer do
            on_exit: on_exit
          ) do
       {:ok, pty_pid} ->
+        # Schedule periodic scrollback flush
+        schedule_flush()
+
         state = %__MODULE__{
           id: id,
           pty_pid: pty_pid,
@@ -103,7 +120,7 @@ defmodule Cortex.Terminal.SessionServer do
           cwd: effective_cwd,
           command: shell,
           project: project,
-          scrollback: Scrollback.new(),
+          scrollback: scrollback,
           status: :running,
           exit_code: nil,
           started_at: DateTime.utc_now(),
@@ -182,6 +199,9 @@ defmodule Cortex.Terminal.SessionServer do
   def handle_info({:pty_exit, exit_code, _signal}, state) do
     Logger.info("Terminal session #{state.id} exited with code #{exit_code}")
 
+    # Persist exit status to DB for crash recovery
+    Cortex.Terminals.mark_exited(state.id, exit_code)
+
     Phoenix.PubSub.broadcast(
       Cortex.PubSub,
       "terminal:sessions",
@@ -200,12 +220,25 @@ defmodule Cortex.Terminal.SessionServer do
   def handle_info(:force_kill, state), do: {:noreply, state}
 
   @impl true
-  def terminate(_reason, %{status: :running, pty_pid: pty_pid}) do
+  def handle_info(:flush_scrollback, state) do
+    flush_scrollback_to_disk(state)
+    schedule_flush()
+    {:noreply, state}
+  end
+
+  @impl true
+  def terminate(_reason, %{pty_pid: pty_pid} = state) when not is_nil(pty_pid) do
+    # Flush scrollback one final time before exit
+    flush_scrollback_to_disk(state)
+    # Always try to kill the PTY, regardless of status
     ExPTY.kill(pty_pid, 9)
     :ok
   end
 
-  def terminate(_reason, _state), do: :ok
+  def terminate(_reason, state) do
+    flush_scrollback_to_disk(state)
+    :ok
+  end
 
   defp session_info(state) do
     %{
@@ -223,4 +256,14 @@ defmodule Cortex.Terminal.SessionServer do
 
   defp project_title(nil), do: "terminal"
   defp project_title(%{name: name}), do: name
+
+  defp schedule_flush do
+    Process.send_after(self(), :flush_scrollback, @flush_interval_ms)
+  end
+
+  defp flush_scrollback_to_disk(%{id: id, scrollback: scrollback}) do
+    Scrollback.save_to_disk(scrollback, id)
+  rescue
+    e -> Logger.warning("Failed to flush scrollback for #{id}: #{inspect(e)}")
+  end
 end
