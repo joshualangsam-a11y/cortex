@@ -1,0 +1,62 @@
+@import "tailwindcss" source(none);
+@source "../../lib/cortex_web";
+@source "../js";
+
+@plugin "../vendor/heroicons";
+
+@custom-variant phx-click-loading (.phx-click-loading&, .phx-click-loading &);
+@custom-variant phx-submit-loading (.phx-submit-loading&, .phx-submit-loading &);
+@custom-variant phx-change-loading (.phx-change-loading&, .phx-change-loading &);
+
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #2a2a2a #050505;
+  }
+
+  body {
+    background-color: #050505;
+    color: #e8dcc0;
+    font-family:
+      -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  /* xterm.js terminal container */
+  .xterm {
+    padding: 4px 6px;
+    height: 100% !important;
+    width: 100% !important;
+  }
+
+  .xterm-screen {
+    width: 100% !important;
+  }
+
+  .xterm-viewport {
+    scrollbar-width: thin;
+    scrollbar-color: #2a2a2a transparent;
+  }
+
+  .xterm-viewport::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .xterm-viewport::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .xterm-viewport::-webkit-scrollbar-thumb {
+    background: #2a2a2a;
+    border-radius: 3px;
+  }
+
+  /* Ensure the terminal hook container fills its flex parent */
+  [phx-hook="Terminal"] {
+    position: relative;
+    overflow: hidden;
+  }
+}
