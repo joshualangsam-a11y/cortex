@@ -22,6 +22,9 @@ defmodule Cortex.Application do
       Cortex.Projects.Registry,
       Cortex.Intelligence.Prioritizer,
       Cortex.Intelligence.OutputMonitor,
+      Cortex.Intelligence.MomentumEngine,
+      Cortex.Intelligence.SessionDNA,
+      Cortex.Intelligence.ThermalThrottle,
       # Restores crashed sessions after all dependencies are up
       {Task, &restore_crashed_sessions/0},
       CortexWeb.Endpoint

@@ -32,16 +32,37 @@ defmodule Cortex.Intelligence.NotificationTest do
   end
 
   describe "from_match/2" do
-    test "builds notification from pattern match result" do
+    test "builds notification with reframed error message" do
       match = %{type: :test_failure, severity: :error, message: "Test failures detected"}
       notification = Notification.from_match("session-42", match)
 
       assert notification.session_id == "session-42"
       assert notification.type == :test_failure
       assert notification.severity == :error
-      assert notification.message == "Test failures detected"
+      # Error messages are reframed as attack surfaces
+      assert notification.message =~ "knock them out"
       assert is_binary(notification.id)
       assert %DateTime{} = notification.timestamp
+    end
+
+    test "preserves non-error messages without reframing" do
+      match = %{type: :test_success, severity: :success, message: "All tests passed"}
+      notification = Notification.from_match("session-42", match)
+
+      assert notification.message == "All tests passed"
+    end
+
+    test "includes action_hint from match" do
+      match = %{
+        type: :build_error,
+        severity: :error,
+        message: "Build failed",
+        action_hint: "scroll up"
+      }
+
+      notification = Notification.from_match("session-42", match)
+
+      assert notification.action_hint == "scroll up"
     end
 
     test "generates unique IDs for each notification" do

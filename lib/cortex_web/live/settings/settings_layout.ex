@@ -29,6 +29,10 @@ defmodule CortexWeb.Settings.SettingsLayout do
           Projects
         </.nav_item>
 
+        <.nav_item page={:brain_profile} current={@current_page} href={~p"/settings/brain"}>
+          Brain Profile
+        </.nav_item>
+
         <.nav_item page={:preferences} current={@current_page} href="#" disabled={true}>
           Preferences
         </.nav_item>
@@ -37,8 +41,8 @@ defmodule CortexWeb.Settings.SettingsLayout do
           Account
         </.nav_item>
       </nav>
-
-      <!-- Content -->
+      
+    <!-- Content -->
       <main class="flex-1 overflow-y-auto p-6">
         {render_slot(@inner_block)}
       </main>

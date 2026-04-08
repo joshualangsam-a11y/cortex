@@ -6,7 +6,15 @@ defmodule Cortex.Intelligence.DailyBrief do
   """
 
   alias Cortex.Repo
-  alias Cortex.Intelligence.BriefCompletion
+
+  alias Cortex.Intelligence.{
+    BriefCompletion,
+    EnergyCycle,
+    FlowCalibrator,
+    FlowHistory,
+    SessionDNA
+  }
+
   import Ecto.Query
 
   @home System.user_home!()
@@ -21,27 +29,28 @@ defmodule Cortex.Intelligence.DailyBrief do
     :build_tasks,
     :pipeline_actions,
     :warnings,
-    :quick_wins
+    :quick_wins,
+    :energy_phase,
+    :energy_level,
+    :energy_suggestion,
+    :today_recap,
+    :flow_calibration_status
   ]
 
   @doc """
   Generate today's brief. Call once on dashboard load.
   """
   def generate do
+    # Cleanup old resume points on brief generation
+    spawn(fn -> Cortex.Intelligence.ResumePoint.cleanup() end)
+
     priorities = parse_priorities()
     pipeline = parse_pipeline()
     recent = parse_recent_memory()
     repo_signals = scan_repos()
+    energy = EnergyCycle.state()
 
-    hour = DateTime.utc_now() |> DateTime.add(-4 * 3600) |> Map.get(:hour)
-
-    greeting =
-      cond do
-        hour < 9 -> "Morning. Here's your battle plan."
-        hour < 17 -> "Lock in. Here's what moves the needle."
-        hour < 21 -> "Evening shift. Pick one and finish it."
-        true -> "Late night. Keep it focused."
-      end
+    greeting = energy_greeting(energy.phase)
 
     %__MODULE__{
       generated_at: DateTime.utc_now(),
@@ -50,8 +59,67 @@ defmodule Cortex.Intelligence.DailyBrief do
       build_tasks: build_tasks(repo_signals, priorities),
       pipeline_actions: build_pipeline_actions(pipeline),
       warnings: build_warnings(repo_signals, pipeline),
-      quick_wins: build_quick_wins(recent, repo_signals)
+      quick_wins: build_quick_wins(recent, repo_signals),
+      energy_phase: energy.phase,
+      energy_level: energy.level,
+      energy_suggestion: energy.suggestion,
+      today_recap: build_today_recap(),
+      flow_calibration_status: safe_calibration_status()
     }
+  end
+
+  defp energy_greeting(:mud) do
+    "Mud hours. Light work only — pipeline, planning, email drafts."
+  end
+
+  defp energy_greeting(:rising) do
+    "Brain warming up. Pick up where you left off — check resume points."
+  end
+
+  defp energy_greeting(:peak) do
+    "Peak hours. Ship the hardest thing on this list."
+  end
+
+  defp energy_greeting(:winding_down) do
+    "Winding down. Finish what's open, leave hooks for tomorrow."
+  end
+
+  defp energy_greeting(:rest) do
+    "Late. Sleep compounds gains — or one more focused sprint."
+  end
+
+  # --- Today Recap: evidence of what you shipped ---
+
+  defp build_today_recap do
+    flow_stats = FlowHistory.today_stats()
+    dna_summary = SessionDNA.today_summary()
+
+    %{
+      flow_sessions: flow_stats.sessions,
+      flow_minutes: flow_stats.total_minutes,
+      longest_flow_minutes: flow_stats.longest_minutes,
+      peak_velocity: flow_stats.peak_velocity,
+      total_sessions: dna_summary.total_sessions,
+      activity_breakdown: dna_summary.activity_breakdown,
+      primary_activity: dna_summary.primary_activity
+    }
+  rescue
+    _ ->
+      %{
+        flow_sessions: 0,
+        flow_minutes: 0,
+        longest_flow_minutes: 0,
+        peak_velocity: 0,
+        total_sessions: 0,
+        activity_breakdown: %{},
+        primary_activity: :idle
+      }
+  end
+
+  defp safe_calibration_status do
+    FlowCalibrator.status()
+  rescue
+    _ -> %{sessions_recorded: 0, sessions_needed: 10, ready: false, progress: 0}
   end
 
   # --- Money Moves: things that directly generate revenue ---

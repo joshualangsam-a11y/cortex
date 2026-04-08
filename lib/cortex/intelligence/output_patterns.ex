@@ -7,38 +7,48 @@ defmodule Cortex.Intelligence.OutputPatterns do
   and a human-readable message.
   """
 
-  @type match :: %{type: atom(), severity: :info | :warning | :error | :success, message: String.t()}
+  @type match :: %{
+          type: atom(),
+          severity: :info | :warning | :error | :success,
+          message: String.t(),
+          action_hint: String.t() | nil
+        }
 
   @patterns [
-    # Build errors
-    {~r/\*\* \(CompileError\)(.*)/, :build_error, :error, "Compile error"},
-    {~r/\*\* \(SyntaxError\)(.*)/, :build_error, :error, "Syntax error"},
-    {~r/BUILD FAILED/i, :build_error, :error, "Build failed"},
-    {~r/FAILED/, :build_error, :error, "Build failed"},
-    {~r/(?:^|\n)\s*error:\s*(.+)/i, :build_error, :error, "Build error"},
-    {~r/(?:^|\n)\s*Error:\s*(.+)/, :build_error, :error, "Build error"},
+    # Build errors — action-oriented, not passive
+    {~r/\*\* \(CompileError\)(.*)/, :build_error, :error, "Compile error",
+     "check the file:line in the error"},
+    {~r/\*\* \(SyntaxError\)(.*)/, :build_error, :error, "Syntax error",
+     "likely a missing end/do/bracket"},
+    {~r/BUILD FAILED/i, :build_error, :error, "Build failed", "scroll up for the root cause"},
+    {~r/FAILED/, :build_error, :error, "Build failed", "scroll up for the root cause"},
+    {~r/(?:^|\n)\s*error:\s*(.+)/i, :build_error, :error, "Build error", nil},
+    {~r/(?:^|\n)\s*Error:\s*(.+)/, :build_error, :error, "Build error", nil},
 
     # Test results
-    {~r/(\d+) tests?, (\d+) failures?/, :test_failure, :error, "Test failures detected"},
-    {~r/All (\d+) tests? passed/, :test_success, :success, "All tests passed"},
-    {~r/0 failures/, :test_success, :success, "Tests passed"},
+    {~r/(\d+) tests?, (\d+) failures?/, :test_failure, :error, "Test failures detected",
+     "run with --trace to isolate"},
+    {~r/All (\d+) tests? passed/, :test_success, :success, "All tests passed", nil},
+    {~r/0 failures/, :test_success, :success, "Tests passed", nil},
 
     # Deploy events
-    {~r/deploy succeeded/i, :deploy_success, :success, "Deploy succeeded"},
-    {~r/deploy failed/i, :deploy_failure, :error, "Deploy failed"},
-    {~r/deployed/i, :deploy_success, :success, "Deployed"},
+    {~r/deploy succeeded/i, :deploy_success, :success, "Deploy succeeded", nil},
+    {~r/deploy failed/i, :deploy_failure, :error, "Deploy failed",
+     "check build logs for the break"},
+    {~r/deployed/i, :deploy_success, :success, "Deployed", nil},
 
     # Claude CLI completion (box-drawing output)
-    {~r/[╭╰│─]{2,}/, :claude_output, :info, "Claude activity detected"},
+    {~r/[╭╰│─]{2,}/, :claude_output, :info, "Claude activity detected", nil},
 
     # Git events
-    {~r/Already up to date/, :git_status, :info, "Git: already up to date"},
-    {~r/Fast-forward/, :git_update, :info, "Git: fast-forward merge"},
-    {~r/CONFLICT/, :git_conflict, :warning, "Git merge conflict"},
+    {~r/Already up to date/, :git_status, :info, "Git: already up to date", nil},
+    {~r/Fast-forward/, :git_update, :info, "Git: fast-forward merge", nil},
+    {~r/CONFLICT/, :git_conflict, :warning, "Git merge conflict",
+     "resolve conflicts then git add"},
 
     # Server events
-    {~r/Running .* at/, :server_started, :info, "Server started"},
-    {~r/Listening on/, :server_started, :info, "Server listening"}
+    {~r/Running .* at/, :server_started, :info, "Server started", nil},
+    {~r/Listening on/, :server_started, :info, "Server listening", nil}
   ]
 
   @doc """
@@ -49,14 +59,14 @@ defmodule Cortex.Intelligence.OutputPatterns do
   @spec detect(binary()) :: [match()]
   def detect(output) when is_binary(output) do
     @patterns
-    |> Enum.reduce([], fn {regex, type, severity, base_message}, acc ->
+    |> Enum.reduce([], fn {regex, type, severity, base_message, action_hint}, acc ->
       case Regex.run(regex, output) do
         nil ->
           acc
 
         [full_match | captures] ->
           message = build_message(base_message, full_match, captures)
-          [%{type: type, severity: severity, message: message} | acc]
+          [%{type: type, severity: severity, message: message, action_hint: action_hint} | acc]
       end
     end)
     |> Enum.reverse()

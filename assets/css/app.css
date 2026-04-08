@@ -79,3 +79,29 @@
 .cortex-search-bar input:focus {
   border-color: #ffd04a;
 }
+
+/* Flow state: subtle amber border on terminal grid */
+[data-flow-state="flowing"] #terminal-grid > div {
+  border-color: rgba(255, 208, 74, 0.15);
+  transition: border-color 0.5s ease;
+}
+
+/* Flow state: focused terminal gets stronger amber */
+[data-flow-state="flowing"] #terminal-grid > div[class*="col-span-full"] {
+  border-color: rgba(255, 208, 74, 0.25);
+}
+
+/* Flow pulse on the header CORTEX label */
+[data-flow-state="flowing"] header .text-\[\#ffd04a\] {
+  animation: flow-pulse 2s ease-in-out infinite;
+}
+
+@keyframes flow-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* Energy phase: mud hours dim the UI slightly */
+[data-flow-state="idle"] .energy-mud {
+  opacity: 0.85;
+}

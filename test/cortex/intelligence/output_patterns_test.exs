@@ -4,20 +4,22 @@ defmodule Cortex.Intelligence.OutputPatternsTest do
   alias Cortex.Intelligence.OutputPatterns
 
   describe "detect/1" do
-    test "detects CompileError as build_error with :error severity" do
+    test "detects CompileError as build_error with :error severity and action_hint" do
       output = ~s|** (CompileError) lib/my_app.ex:10: undefined function foo/0|
       [match | _] = OutputPatterns.detect(output)
       assert match.type == :build_error
       assert match.severity == :error
       assert match.message =~ "Compile error"
+      assert match.action_hint == "check the file:line in the error"
     end
 
-    test "detects SyntaxError as build_error" do
+    test "detects SyntaxError as build_error with action_hint" do
       output = ~s|** (SyntaxError) lib/my_app.ex:5: unexpected token: "|
       [match | _] = OutputPatterns.detect(output)
       assert match.type == :build_error
       assert match.severity == :error
       assert match.message =~ "Syntax error"
+      assert match.action_hint == "likely a missing end/do/bracket"
     end
 
     test "detects BUILD FAILED as build_error" do
@@ -40,7 +42,7 @@ defmodule Cortex.Intelligence.OutputPatternsTest do
       assert success.severity == :success
     end
 
-    test "detects test failures as test_failure with :error severity" do
+    test "detects test failures as test_failure with :error severity and action_hint" do
       output = "5 tests, 2 failures"
       matches = OutputPatterns.detect(output)
       types = Enum.map(matches, & &1.type)
@@ -48,6 +50,7 @@ defmodule Cortex.Intelligence.OutputPatternsTest do
 
       failure = Enum.find(matches, &(&1.type == :test_failure))
       assert failure.severity == :error
+      assert failure.action_hint == "run with --trace to isolate"
     end
 
     test "detects deploy succeeded as deploy_success" do
@@ -70,7 +73,7 @@ defmodule Cortex.Intelligence.OutputPatternsTest do
       assert deploy.severity == :error
     end
 
-    test "detects CONFLICT as git_conflict with :warning severity" do
+    test "detects CONFLICT as git_conflict with :warning severity and action_hint" do
       output = "CONFLICT (content): Merge conflict in lib/app.ex"
       matches = OutputPatterns.detect(output)
       types = Enum.map(matches, & &1.type)
@@ -78,6 +81,7 @@ defmodule Cortex.Intelligence.OutputPatternsTest do
 
       conflict = Enum.find(matches, &(&1.type == :git_conflict))
       assert conflict.severity == :warning
+      assert conflict.action_hint == "resolve conflicts then git add"
     end
 
     test "detects server start pattern with :info severity" do

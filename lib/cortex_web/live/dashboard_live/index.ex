@@ -5,7 +5,18 @@ defmodule CortexWeb.DashboardLive.Index do
   alias Cortex.Projects
   alias Cortex.Workspaces
   alias Cortex.Intelligence
-  alias Cortex.Intelligence.DailyBrief
+
+  alias Cortex.Intelligence.{
+    DailyBrief,
+    EnergyCycle,
+    FlowCalibrator,
+    FlowHistory,
+    MomentumEngine,
+    ResumePoint,
+    SessionDNA,
+    SmartResume,
+    ThermalThrottle
+  }
 
   @impl true
   def mount(_params, _session, socket) do
@@ -14,6 +25,8 @@ defmodule CortexWeb.DashboardLive.Index do
       Phoenix.PubSub.subscribe(Cortex.PubSub, Intelligence.Prioritizer.topic())
       Phoenix.PubSub.subscribe(Cortex.PubSub, "terminal:status")
       Phoenix.PubSub.subscribe(Cortex.PubSub, "terminal:notifications")
+      Phoenix.PubSub.subscribe(Cortex.PubSub, MomentumEngine.topic())
+      Phoenix.PubSub.subscribe(Cortex.PubSub, ThermalThrottle.topic())
     end
 
     sessions = Terminals.list_sessions()
@@ -39,6 +52,7 @@ defmodule CortexWeb.DashboardLive.Index do
 
     if connected?(socket) do
       Process.send_after(self(), :refresh_deploys, 60_000)
+      Process.send_after(self(), :refresh_energy, 60_000)
     end
 
     socket =
@@ -62,6 +76,15 @@ defmodule CortexWeb.DashboardLive.Index do
       |> assign(:deploy_statuses, scan_deploys())
       |> assign(:git_statuses, git_statuses)
       |> assign(:started_at, DateTime.utc_now())
+      |> assign(:flow_state, :idle)
+      |> assign(:velocity, 0)
+      |> assign(:resume_points, load_resume_points())
+      |> assign(:smart_resume, load_smart_resume())
+      |> assign(:energy, EnergyCycle.state())
+      |> assign(:flow_stats, load_flow_stats())
+      |> assign(:thermal_state, :normal)
+      |> assign(:thermal_suggestion, nil)
+      |> assign(:show_stats, false)
 
     {:ok, socket}
   end
@@ -76,6 +99,24 @@ defmodule CortexWeb.DashboardLive.Index do
     DailyBrief.completed_today()
   rescue
     _ -> MapSet.new()
+  end
+
+  defp load_resume_points do
+    ResumePoint.pending()
+  rescue
+    _ -> []
+  end
+
+  defp load_smart_resume do
+    SmartResume.suggestions()
+  rescue
+    _ -> []
+  end
+
+  defp load_flow_stats do
+    FlowHistory.today_stats()
+  rescue
+    _ -> %{sessions: 0, total_minutes: 0, longest_minutes: 0, peak_velocity: 0}
   end
 
   defp is_done?(completed, action) do
@@ -119,6 +160,11 @@ defmodule CortexWeb.DashboardLive.Index do
   end
 
   def handle_event("focus", %{"id" => id}, socket) do
+    # Track context switches for thermal throttle detection
+    if socket.assigns.focused_id && socket.assigns.focused_id != id do
+      ThermalThrottle.record_context_switch()
+    end
+
     {:noreply, assign(socket, :focused_id, id)}
   end
 
@@ -276,6 +322,56 @@ defmodule CortexWeb.DashboardLive.Index do
     {:noreply, assign(socket, :show_brief, false)}
   end
 
+  def handle_event("resume_point", %{"id" => id, "project" => name}, socket) do
+    ResumePoint.mark_resumed(id)
+    project = Projects.get_project(name)
+
+    if project do
+      Terminals.create_session(%{project: project, title: project.name})
+    end
+
+    {:noreply, assign(socket, resume_points: load_resume_points())}
+  end
+
+  def handle_event("dismiss_resume", %{"id" => id}, socket) do
+    ResumePoint.mark_dismissed(id)
+    {:noreply, assign(socket, resume_points: load_resume_points())}
+  end
+
+  def handle_event("burst_mode", %{"name" => name}, socket) do
+    Cortex.Terminals.BurstMode.launch(name)
+    {:noreply, assign(socket, command_palette_open: false, search_query: "")}
+  end
+
+  def handle_event(
+        "smart_resume",
+        %{"type" => "resume_point", "id" => id, "project" => name},
+        socket
+      ) do
+    ResumePoint.mark_resumed(id)
+    project = Projects.get_project(name)
+
+    if project do
+      Terminals.create_session(%{project: project, title: project.name})
+    end
+
+    {:noreply,
+     assign(socket, resume_points: load_resume_points(), smart_resume: load_smart_resume())}
+  end
+
+  def handle_event("smart_resume", %{"type" => "workspace", "project" => name}, socket) do
+    Workspaces.launch_workspace(name)
+    {:noreply, assign(socket, smart_resume: load_smart_resume())}
+  end
+
+  def handle_event("dismiss_thermal", _params, socket) do
+    {:noreply, assign(socket, thermal_state: :normal, thermal_suggestion: nil)}
+  end
+
+  def handle_event("toggle_stats", _params, socket) do
+    {:noreply, assign(socket, :show_stats, !socket.assigns[:show_stats])}
+  end
+
   def handle_event("toggle_command_palette", _params, socket) do
     open = !socket.assigns.command_palette_open
     {:noreply, assign(socket, command_palette_open: open, search_query: "")}
@@ -319,6 +415,8 @@ defmodule CortexWeb.DashboardLive.Index do
   def handle_event("terminal_input", %{"session_id" => id, "data" => data}, socket) do
     decoded = Base.decode64!(data)
     Terminals.write(id, decoded)
+    # Feed momentum engine — tracks keystroke velocity for flow detection
+    MomentumEngine.record_input(id)
     {:noreply, socket}
   end
 
@@ -356,6 +454,15 @@ defmodule CortexWeb.DashboardLive.Index do
         Map.merge(s, %{status: :exited, exit_code: exit_code})
       end)
 
+    # Zeigarnik: generate resume point from last output buffer
+    spawn(fn ->
+      with data when is_binary(data) and byte_size(data) > 0 <- Terminals.get_scrollback(id),
+           session when not is_nil(session) <- Map.get(socket.assigns.sessions, id) do
+        project_name = session[:title] || session[:project_name]
+        ResumePoint.from_output(id, project_name, data)
+      end
+    end)
+
     # Auto-remove dead sessions after 3 seconds
     Process.send_after(self(), {:remove_session, id}, 3000)
 
@@ -387,17 +494,37 @@ defmodule CortexWeb.DashboardLive.Index do
   end
 
   def handle_info({:terminal_notification, _id, notification}, socket) do
-    toast = %{
-      id: System.unique_integer([:positive]),
-      severity: notification.severity,
-      message: notification.message,
-      session_id: notification.session_id,
-      timestamp: DateTime.utc_now()
-    }
+    # Flow-aware toast suppression: during flow state, only show errors
+    # Non-critical notifications (info, success) are suppressed to protect momentum
+    if socket.assigns.flow_state == :flowing and notification.severity in [:info, :success] do
+      {:noreply, socket}
+    else
+      toast = %{
+        id: System.unique_integer([:positive]),
+        severity: notification.severity,
+        message: notification.message,
+        action_hint: notification.action_hint,
+        session_id: notification.session_id,
+        timestamp: DateTime.utc_now()
+      }
 
-    Process.send_after(self(), {:dismiss_toast, toast.id}, 5000)
-    toasts = [toast | socket.assigns.toasts] |> Enum.take(5)
-    {:noreply, assign(socket, :toasts, toasts)}
+      Process.send_after(self(), {:dismiss_toast, toast.id}, 5000)
+      toasts = [toast | socket.assigns.toasts] |> Enum.take(5)
+      {:noreply, assign(socket, :toasts, toasts)}
+    end
+  end
+
+  def handle_info({:momentum_changed, flow_state, velocity}, socket) do
+    socket =
+      socket
+      |> assign(flow_state: flow_state, velocity: velocity)
+      |> assign(:flow_stats, load_flow_stats())
+
+    {:noreply, socket}
+  end
+
+  def handle_info({:thermal_throttle, thermal_state, suggestion}, socket) do
+    {:noreply, assign(socket, thermal_state: thermal_state, thermal_suggestion: suggestion)}
   end
 
   def handle_info({:dismiss_toast, toast_id}, socket) do
@@ -408,6 +535,15 @@ defmodule CortexWeb.DashboardLive.Index do
   def handle_info(:refresh_deploys, socket) do
     Process.send_after(self(), :refresh_deploys, 60_000)
     {:noreply, assign(socket, :deploy_statuses, scan_deploys())}
+  end
+
+  def handle_info(:refresh_energy, socket) do
+    Process.send_after(self(), :refresh_energy, 60_000)
+
+    {:noreply,
+     socket
+     |> assign(:energy, EnergyCycle.state())
+     |> assign(:flow_stats, load_flow_stats())}
   end
 
   # Helpers
@@ -436,8 +572,12 @@ defmodule CortexWeb.DashboardLive.Index do
 
   defp port_alive?(port) do
     case :gen_tcp.connect(~c"127.0.0.1", port, [], 200) do
-      {:ok, socket} -> :gen_tcp.close(socket); true
-      _ -> false
+      {:ok, socket} ->
+        :gen_tcp.close(socket)
+        true
+
+      _ ->
+        false
     end
   end
 
@@ -471,12 +611,173 @@ defmodule CortexWeb.DashboardLive.Index do
   defp status_color(:running), do: "bg-[#5ea85e]"
   defp status_color(_), do: "bg-[#e05252]"
 
+  defp stats_panel(assigns) do
+    week = safe_week_stats()
+    calibration = safe_calibration_status()
+    dna = safe_dna_summary()
+    thermal = safe_thermal_state()
+    insights = safe_insights()
+
+    assigns =
+      assigns
+      |> assign(:week, week)
+      |> assign(:calibration, calibration)
+      |> assign(:insights, insights)
+      |> assign(:dna, dna)
+      |> assign(:thermal, thermal)
+
+    ~H"""
+    <div class="border-b border-[#1a1a1a] bg-[#080808] px-4 py-3 shrink-0 animate-slide-in">
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-[10px] text-[#ffd04a] uppercase tracking-wider font-medium">Evidence</span>
+        <span class="text-[10px] text-[#2a2a2a] font-mono">Cmd+Shift+I</span>
+      </div>
+
+      <div class="grid grid-cols-4 gap-4">
+        <%!-- Today --%>
+        <div class="space-y-1">
+          <span class="text-[9px] text-[#3a3a3a] uppercase tracking-wider">Today</span>
+          <div class="text-sm text-[#e8dcc0] font-mono">
+            {if @flow_stats.total_minutes > 0,
+              do: format_flow_time(@flow_stats.total_minutes),
+              else: "0m"} flow
+          </div>
+          <div class="text-[10px] text-[#5a5a5a] font-mono">{@flow_stats.sessions} flow sessions</div>
+          <div :if={@flow_stats.longest_minutes > 0} class="text-[10px] text-[#5a5a5a] font-mono">
+            longest: {format_flow_time(@flow_stats.longest_minutes)}
+          </div>
+        </div>
+
+        <%!-- This Week --%>
+        <div class="space-y-1">
+          <span class="text-[9px] text-[#3a3a3a] uppercase tracking-wider">This Week</span>
+          <div class="text-sm text-[#e8dcc0] font-mono">{@week.total_hours}h flow</div>
+          <div class="text-[10px] text-[#5a5a5a] font-mono">{@week.sessions} sessions</div>
+          <div :if={@week.streak > 0} class="text-[10px] text-[#ffd04a] font-mono">
+            {@week.streak}d streak
+          </div>
+        </div>
+
+        <%!-- Current State --%>
+        <div class="space-y-1">
+          <span class="text-[9px] text-[#3a3a3a] uppercase tracking-wider">State</span>
+          <div class="flex items-center gap-1.5">
+            <span class={"w-2 h-2 rounded-full " <> energy_dot_class(@energy.phase)} />
+            <span class={"text-sm font-mono " <> energy_text_class(@energy.phase)}>
+              {energy_label(@energy.phase)}
+            </span>
+            <span class="text-[10px] text-[#2a2a2a] font-mono">{@energy.level}/10</span>
+          </div>
+          <div class="text-[10px] text-[#5a5a5a] font-mono">
+            {if @flow_state == :flowing, do: "IN FLOW", else: "#{@velocity}/s velocity"}
+          </div>
+          <div class={"text-[10px] font-mono " <> thermal_color(@thermal.thermal_state)}>
+            {thermal_label(@thermal.thermal_state)}
+          </div>
+        </div>
+
+        <%!-- Calibration --%>
+        <div class="space-y-1">
+          <span class="text-[9px] text-[#3a3a3a] uppercase tracking-wider">Brain Calibration</span>
+          <div class="text-sm text-[#e8dcc0] font-mono">{@calibration.progress}%</div>
+          <div class="text-[10px] text-[#5a5a5a] font-mono">
+            {@calibration.sessions_recorded}/{@calibration.sessions_needed} flow sessions
+          </div>
+          <div class="w-full bg-[#1a1a1a] rounded-full h-1 mt-1">
+            <div class="bg-[#ffd04a] h-1 rounded-full" style={"width: #{@calibration.progress}%"} />
+          </div>
+          <div :if={@calibration.ready} class="text-[10px] text-[#5ea85e] font-mono">
+            auto-calibrating
+          </div>
+        </div>
+      </div>
+
+      <%!-- Activity DNA --%>
+      <div :if={map_size(@dna.activity_breakdown) > 0} class="mt-3 pt-3 border-t border-[#1a1a1a]">
+        <span class="text-[9px] text-[#3a3a3a] uppercase tracking-wider">Session DNA</span>
+        <div class="flex items-center gap-3 mt-1">
+          <%= for {activity, count} <- Enum.sort_by(@dna.activity_breakdown, fn {_k, v} -> -v end) do %>
+            <span class={"text-[10px] font-mono " <> activity_color(activity)}>
+              {activity_label(activity)} {count}
+            </span>
+          <% end %>
+        </div>
+      </div>
+
+      <%!-- Work Pattern Insights --%>
+      <div :if={@insights != []} class="mt-3 pt-3 border-t border-[#1a1a1a] space-y-2">
+        <span class="text-[9px] text-[#ffd04a] uppercase tracking-wider">Insights</span>
+        <%= for insight <- Enum.take(@insights, 3) do %>
+          <div class="flex items-start gap-2">
+            <span class="text-[10px] text-[#ffd04a] shrink-0 mt-0.5">*</span>
+            <div>
+              <span class="text-[11px] text-[#e8dcc0]">{insight.insight}</span>
+              <span class="text-[9px] text-[#3a3a3a] ml-2">{insight.evidence}</span>
+              <div :if={insight.suggestion} class="text-[10px] text-[#5a5a5a] mt-0.5">
+                {insight.suggestion}
+              </div>
+            </div>
+          </div>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  defp safe_week_stats do
+    FlowHistory.week_stats()
+  rescue
+    _ -> %{sessions: 0, total_hours: 0.0, avg_session_minutes: 0, peak_velocity: 0, streak: 0}
+  end
+
+  defp safe_calibration_status do
+    FlowCalibrator.status()
+  rescue
+    _ -> %{sessions_recorded: 0, sessions_needed: 10, ready: false, progress: 0}
+  end
+
+  defp safe_dna_summary do
+    SessionDNA.today_summary()
+  rescue
+    _ -> %{total_sessions: 0, activity_breakdown: %{}, primary_activity: :idle, total_events: 0}
+  end
+
+  defp safe_thermal_state do
+    ThermalThrottle.state()
+  rescue
+    _ ->
+      %{
+        thermal_state: :normal,
+        recent_errors: 0,
+        recent_switches: 0,
+        session_hours: 0,
+        velocity: 0
+      }
+  end
+
+  defp safe_insights do
+    Cortex.Intelligence.WorkPatterns.generate()
+  rescue
+    _ -> []
+  end
+
+  defp thermal_color(:normal), do: "text-[#3a3a3a]"
+  defp thermal_color(:elevated), do: "text-[#5a5a5a]"
+  defp thermal_color(:warming), do: "text-[#e8b839]"
+  defp thermal_color(:overheating), do: "text-[#e05252]"
+
+  defp thermal_label(:normal), do: "thermal: normal"
+  defp thermal_label(:elevated), do: "thermal: elevated"
+  defp thermal_label(:warming), do: "thermal: warming"
+  defp thermal_label(:overheating), do: "thermal: OVERHEATING"
+
   @impl true
   def render(assigns) do
     ~H"""
     <div
       id="cortex-root"
       phx-hook="CommandPalette"
+      data-flow-state={@flow_state}
       class="h-screen bg-[#050505] flex flex-col select-none"
     >
       <%!-- Header --%>
@@ -486,6 +787,14 @@ defmodule CortexWeb.DashboardLive.Index do
           <span class="text-[#3a3a3a] text-xs font-mono">
             {length(@session_order)} sessions
           </span>
+          <%!-- Energy phase indicator --%>
+          <div class="flex items-center gap-1.5 ml-2 pl-3 border-l border-[#1a1a1a]">
+            <div class={"w-1.5 h-1.5 rounded-full " <> energy_dot_class(@energy.phase)} />
+            <span class={"text-[10px] font-mono " <> energy_text_class(@energy.phase)}>
+              {energy_label(@energy.phase)}
+            </span>
+            <span class="text-[10px] text-[#2a2a2a] font-mono">{@energy.level}/10</span>
+          </div>
           <%!-- Deploy status indicator --%>
           <div class="flex items-center gap-1.5 ml-2 pl-3 border-l border-[#1a1a1a]">
             <span class="text-[10px] text-[#3a3a3a] uppercase tracking-wider">Live</span>
@@ -498,6 +807,23 @@ defmodule CortexWeb.DashboardLive.Index do
             <% end %>
             <span class="text-[10px] text-[#3a3a3a] font-mono">
               {Enum.count(@deploy_statuses, & &1.alive)}/{length(@deploy_statuses)}
+            </span>
+          </div>
+          <%!-- Momentum indicator --%>
+          <div
+            :if={@flow_state == :flowing || @velocity > 0}
+            class="flex items-center gap-1.5 ml-2 pl-3 border-l border-[#1a1a1a]"
+          >
+            <span class={[
+              "w-2 h-2 rounded-full shrink-0",
+              @flow_state == :flowing && "bg-[#ffd04a] animate-pulse",
+              @flow_state == :idle && @velocity > 0 && "bg-[#5a5a5a]"
+            ]} />
+            <span class={"text-[10px] font-mono " <> if(@flow_state == :flowing, do: "text-[#ffd04a]", else: "text-[#3a3a3a]")}>
+              {if @flow_state == :flowing, do: "FLOW", else: "#{@velocity}/s"}
+            </span>
+            <span :if={@flow_stats.total_minutes > 0} class="text-[10px] text-[#2a2a2a] font-mono">
+              {format_flow_time(@flow_stats.total_minutes)} today
             </span>
           </div>
           <%!-- Priority indicator --%>
@@ -515,7 +841,9 @@ defmodule CortexWeb.DashboardLive.Index do
           </div>
         </div>
         <div class="flex items-center gap-3">
-          <span :if={@current_user} class="text-[10px] text-[#3a3a3a] font-mono">{@current_user.email}</span>
+          <span :if={@current_user} class="text-[10px] text-[#3a3a3a] font-mono">
+            {@current_user.email}
+          </span>
           <a
             :if={@current_user}
             href="/auth/logout"
@@ -540,6 +868,12 @@ defmodule CortexWeb.DashboardLive.Index do
             class="text-[10px] text-[#5a5a5a] hover:text-[#ffd04a] transition-colors cursor-pointer"
           >
             brief
+          </button>
+          <button
+            phx-click="toggle_stats"
+            class={"text-[10px] transition-colors cursor-pointer " <> if(@show_stats, do: "text-[#ffd04a]", else: "text-[#5a5a5a] hover:text-[#ffd04a]")}
+          >
+            stats
           </button>
           <button
             phx-click="new_session"
@@ -594,6 +928,33 @@ defmodule CortexWeb.DashboardLive.Index do
         <% end %>
       </div>
 
+      <%!-- Stats Evidence Panel (Cmd+Shift+I) --%>
+      <.stats_panel
+        :if={@show_stats}
+        energy={@energy}
+        flow_state={@flow_state}
+        velocity={@velocity}
+        flow_stats={@flow_stats}
+      />
+
+      <%!-- Thermal Throttle Banner --%>
+      <div
+        :if={@thermal_state == :overheating && @thermal_suggestion}
+        class="mx-1.5 mt-1.5 px-4 py-2.5 rounded-[7px] border border-[#e05252]/20 bg-[#0a0505] flex items-center gap-3 shrink-0 animate-slide-in"
+      >
+        <span class="w-2 h-2 rounded-full bg-[#e05252] animate-pulse shrink-0" />
+        <span class="text-[11px] text-[#e05252] font-mono flex-1">{@thermal_suggestion}</span>
+        <span class="text-[9px] text-[#3a3a3a] font-mono shrink-0">
+          not quitting — thermal throttling
+        </span>
+        <button
+          phx-click="dismiss_thermal"
+          class="text-[10px] text-[#3a3a3a] hover:text-[#e05252] ml-2 shrink-0 cursor-pointer"
+        >
+          dismiss
+        </button>
+      </div>
+
       <%!-- Terminal Grid --%>
       <div
         :if={@session_order != []}
@@ -622,7 +983,10 @@ defmodule CortexWeb.DashboardLive.Index do
                 <span class="text-[11px] text-[#5a5a5a] truncate font-medium">
                   {session_title(session)}
                 </span>
-                <span :if={status = @session_statuses[id]} class={"text-[9px] font-mono px-1.5 py-0.5 rounded-[4px] " <> session_status_class(status)}>
+                <span
+                  :if={status = @session_statuses[id]}
+                  class={"text-[9px] font-mono px-1.5 py-0.5 rounded-[4px] " <> session_status_class(status)}
+                >
                   {status_label(status)}
                 </span>
                 <span class="text-[10px] text-[#2a2a2a] font-mono shrink-0">{idx + 1}</span>
@@ -673,13 +1037,104 @@ defmodule CortexWeb.DashboardLive.Index do
           <div class="text-center mb-6">
             <div class="text-[#ffd04a] text-xl font-bold tracking-wide">CORTEX</div>
             <p class="text-[#3a3a3a] text-sm mt-1">{@brief.greeting}</p>
+            <p :if={@brief.energy_suggestion} class="text-[#2a2a2a] text-[10px] font-mono mt-1.5">
+              {@brief.energy_suggestion}
+            </p>
+          </div>
+
+          <%!-- Today Recap — evidence of what you've built --%>
+          <div
+            :if={@brief.today_recap && @brief.today_recap.total_sessions > 0}
+            class="rounded-[8px] border border-[#1a1a1a]/50 bg-[#080808] px-4 py-3"
+          >
+            <div class="flex items-center justify-between">
+              <span class="text-[10px] text-[#3a3a3a] uppercase tracking-wider font-medium">
+                Today
+              </span>
+              <span
+                :if={@brief.today_recap.flow_minutes > 0}
+                class="text-[10px] text-[#ffd04a] font-mono"
+              >
+                {format_flow_time(@brief.today_recap.flow_minutes)} flow
+              </span>
+            </div>
+            <div class="flex items-center gap-4 mt-1.5">
+              <span class="text-[10px] text-[#5a5a5a] font-mono">
+                {@brief.today_recap.total_sessions} sessions
+              </span>
+              <span
+                :if={@brief.today_recap.flow_sessions > 0}
+                class="text-[10px] text-[#5a5a5a] font-mono"
+              >
+                {@brief.today_recap.flow_sessions} flow states
+              </span>
+              <span
+                :if={@brief.today_recap.longest_flow_minutes > 0}
+                class="text-[10px] text-[#5a5a5a] font-mono"
+              >
+                longest: {format_flow_time(@brief.today_recap.longest_flow_minutes)}
+              </span>
+              <%= for {activity, count} <- @brief.today_recap.activity_breakdown do %>
+                <span class={"text-[10px] font-mono " <> activity_color(activity)}>
+                  {activity_label(activity)} {count}
+                </span>
+              <% end %>
+            </div>
+          </div>
+
+          <%!-- Smart Resume (Zeigarnik) — ranked by urgency, recency, energy --%>
+          <div
+            :if={@smart_resume != []}
+            class="rounded-[8px] border border-[#ffd04a]/20 bg-[#080808] overflow-hidden"
+          >
+            <div class="px-4 py-2.5 border-b border-[#ffd04a]/10 flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-[#ffd04a] animate-pulse" />
+              <span class="text-[11px] text-[#ffd04a] uppercase tracking-wider font-medium">
+                Pick Up Where You Left Off
+              </span>
+            </div>
+            <div class="divide-y divide-[#111]">
+              <%= for {suggestion, idx} <- Enum.with_index(@smart_resume) do %>
+                <button
+                  phx-click="smart_resume"
+                  phx-value-type={suggestion.type}
+                  phx-value-id={suggestion[:id]}
+                  phx-value-project={suggestion.project_name}
+                  class="w-full px-4 py-3 flex items-center justify-between hover:bg-[#0f0f0f] transition-colors cursor-pointer text-left group"
+                >
+                  <div class="flex items-start gap-2 min-w-0">
+                    <span class={"text-[10px] shrink-0 mt-0.5 font-mono " <> if(idx == 0, do: "text-[#ffd04a]", else: "text-[#2a2a2a] group-hover:text-[#ffd04a]")}>
+                      {if idx == 0, do: ">>", else: ">"}
+                    </span>
+                    <div class="min-w-0">
+                      <div class="flex items-center gap-2">
+                        <span class={"text-sm font-medium " <> if(idx == 0, do: "text-[#ffd04a]", else: "text-[#e8dcc0]")}>
+                          {suggestion.project_name}
+                        </span>
+                        <span class="text-[9px] text-[#3a3a3a] font-mono">{suggestion.source}</span>
+                      </div>
+                      <span class="text-[11px] text-[#5a5a5a]">{suggestion.context}</span>
+                      <div class="text-[10px] text-[#3a3a3a] mt-0.5">{suggestion.next_action}</div>
+                    </div>
+                  </div>
+                  <span class={"text-[10px] font-mono shrink-0 " <> resume_urgency_color(suggestion.urgency_score)}>
+                    {suggestion.urgency_score}
+                  </span>
+                </button>
+              <% end %>
+            </div>
           </div>
 
           <%!-- Money Moves --%>
-          <div :if={@brief.money_moves != []} class="rounded-[8px] border border-[#1a1a1a] bg-[#080808] overflow-hidden">
+          <div
+            :if={@brief.money_moves != []}
+            class="rounded-[8px] border border-[#1a1a1a] bg-[#080808] overflow-hidden"
+          >
             <div class="px-4 py-2.5 border-b border-[#1a1a1a] flex items-center gap-2">
               <span class="w-2 h-2 rounded-full bg-[#ffd04a]" />
-              <span class="text-[11px] text-[#ffd04a] uppercase tracking-wider font-medium">Money Moves</span>
+              <span class="text-[11px] text-[#ffd04a] uppercase tracking-wider font-medium">
+                Money Moves
+              </span>
             </div>
             <div class="divide-y divide-[#111]">
               <%= for move <- @brief.money_moves do %>
@@ -691,10 +1146,20 @@ defmodule CortexWeb.DashboardLive.Index do
                 >
                   <div class="flex items-center gap-2 min-w-0">
                     <span :if={done} class="text-[10px] text-[#5ea85e] shrink-0">done</span>
-                    <span :if={!done} class="text-[10px] text-[#2a2a2a] group-hover:text-[#ffd04a] transition-colors shrink-0">></span>
-                    <span class={"text-sm " <> if(done, do: "text-[#3a3a3a] line-through", else: "text-[#e8dcc0]")}>{move.action}</span>
+                    <span
+                      :if={!done}
+                      class="text-[10px] text-[#2a2a2a] group-hover:text-[#ffd04a] transition-colors shrink-0"
+                    >
+                      >
+                    </span>
+                    <span class={"text-sm " <> if(done, do: "text-[#3a3a3a] line-through", else: "text-[#e8dcc0]")}>
+                      {move.action}
+                    </span>
                   </div>
-                  <span :if={!done} class={"text-[10px] font-mono px-2 py-0.5 rounded-[5px] " <> urgency_class(move.priority)}>
+                  <span
+                    :if={!done}
+                    class={"text-[10px] font-mono px-2 py-0.5 rounded-[5px] " <> urgency_class(move.priority)}
+                  >
                     {move.priority}
                   </span>
                 </button>
@@ -703,10 +1168,15 @@ defmodule CortexWeb.DashboardLive.Index do
           </div>
 
           <%!-- Pipeline Actions --%>
-          <div :if={@brief.pipeline_actions != []} class="rounded-[8px] border border-[#1a1a1a] bg-[#080808] overflow-hidden">
+          <div
+            :if={@brief.pipeline_actions != []}
+            class="rounded-[8px] border border-[#1a1a1a] bg-[#080808] overflow-hidden"
+          >
             <div class="px-4 py-2.5 border-b border-[#1a1a1a] flex items-center gap-2">
               <span class="w-2 h-2 rounded-full bg-[#e05252]" />
-              <span class="text-[11px] text-[#e05252] uppercase tracking-wider font-medium">Pipeline</span>
+              <span class="text-[11px] text-[#e05252] uppercase tracking-wider font-medium">
+                Pipeline
+              </span>
             </div>
             <div class="divide-y divide-[#111]">
               <%= for action <- @brief.pipeline_actions do %>
@@ -718,10 +1188,20 @@ defmodule CortexWeb.DashboardLive.Index do
                 >
                   <div class="flex items-center gap-2 min-w-0">
                     <span :if={done} class="text-[10px] text-[#5ea85e] shrink-0">done</span>
-                    <span :if={!done} class="text-[10px] text-[#2a2a2a] group-hover:text-[#e05252] transition-colors shrink-0">></span>
-                    <span class={"text-sm " <> if(done, do: "text-[#3a3a3a] line-through", else: "text-[#e8dcc0]")}>{action.action}</span>
+                    <span
+                      :if={!done}
+                      class="text-[10px] text-[#2a2a2a] group-hover:text-[#e05252] transition-colors shrink-0"
+                    >
+                      >
+                    </span>
+                    <span class={"text-sm " <> if(done, do: "text-[#3a3a3a] line-through", else: "text-[#e8dcc0]")}>
+                      {action.action}
+                    </span>
                   </div>
-                  <span :if={!done} class={"text-[10px] font-mono px-2 py-0.5 rounded-[5px] " <> urgency_class(action.urgency)}>
+                  <span
+                    :if={!done}
+                    class={"text-[10px] font-mono px-2 py-0.5 rounded-[5px] " <> urgency_class(action.urgency)}
+                  >
                     {action.urgency}
                   </span>
                 </button>
@@ -730,10 +1210,15 @@ defmodule CortexWeb.DashboardLive.Index do
           </div>
 
           <%!-- Build Tasks --%>
-          <div :if={@brief.build_tasks != []} class="rounded-[8px] border border-[#1a1a1a] bg-[#080808] overflow-hidden">
+          <div
+            :if={@brief.build_tasks != []}
+            class="rounded-[8px] border border-[#1a1a1a] bg-[#080808] overflow-hidden"
+          >
             <div class="px-4 py-2.5 border-b border-[#1a1a1a] flex items-center gap-2">
               <span class="w-2 h-2 rounded-full bg-[#5ea85e]" />
-              <span class="text-[11px] text-[#5ea85e] uppercase tracking-wider font-medium">Build</span>
+              <span class="text-[11px] text-[#5ea85e] uppercase tracking-wider font-medium">
+                Build
+              </span>
             </div>
             <div class="divide-y divide-[#111]">
               <%= for task <- @brief.build_tasks do %>
@@ -746,9 +1231,18 @@ defmodule CortexWeb.DashboardLive.Index do
                 >
                   <div class="flex items-center gap-3 min-w-0">
                     <span :if={done} class="text-[10px] text-[#5ea85e] shrink-0">done</span>
-                    <span :if={!done} class="text-[10px] text-[#2a2a2a] group-hover:text-[#5ea85e] transition-colors shrink-0">></span>
-                    <span class={"text-sm font-medium shrink-0 " <> if(done, do: "text-[#3a3a3a] line-through", else: "text-[#e8dcc0]")}>{task.project}</span>
-                    <span class={"text-[11px] truncate " <> if(done, do: "text-[#2a2a2a]", else: "text-[#3a3a3a]")}>{task.action}</span>
+                    <span
+                      :if={!done}
+                      class="text-[10px] text-[#2a2a2a] group-hover:text-[#5ea85e] transition-colors shrink-0"
+                    >
+                      >
+                    </span>
+                    <span class={"text-sm font-medium shrink-0 " <> if(done, do: "text-[#3a3a3a] line-through", else: "text-[#e8dcc0]")}>
+                      {task.project}
+                    </span>
+                    <span class={"text-[11px] truncate " <> if(done, do: "text-[#2a2a2a]", else: "text-[#3a3a3a]")}>
+                      {task.action}
+                    </span>
                   </div>
                   <span :if={!done} class={"text-[10px] font-mono " <> score_color(task.score)}>
                     {task.score}
@@ -759,10 +1253,15 @@ defmodule CortexWeb.DashboardLive.Index do
           </div>
 
           <%!-- Quick Wins --%>
-          <div :if={@brief.quick_wins != []} class="rounded-[8px] border border-[#1a1a1a] bg-[#080808] overflow-hidden">
+          <div
+            :if={@brief.quick_wins != []}
+            class="rounded-[8px] border border-[#1a1a1a] bg-[#080808] overflow-hidden"
+          >
             <div class="px-4 py-2.5 border-b border-[#1a1a1a] flex items-center gap-2">
               <span class="w-2 h-2 rounded-full bg-[#5a9bcf]" />
-              <span class="text-[11px] text-[#5a9bcf] uppercase tracking-wider font-medium">Quick Wins</span>
+              <span class="text-[11px] text-[#5a9bcf] uppercase tracking-wider font-medium">
+                Quick Wins
+              </span>
               <span class="text-[10px] text-[#2a2a2a]">under 5 min</span>
             </div>
             <div class="divide-y divide-[#111]">
@@ -774,17 +1273,29 @@ defmodule CortexWeb.DashboardLive.Index do
                   class={"w-full px-4 py-2.5 transition-colors text-left group flex items-center gap-2 " <> if(done, do: "opacity-50", else: "hover:bg-[#0f0f0f] cursor-pointer")}
                 >
                   <span :if={done} class="text-[10px] text-[#5ea85e] shrink-0">done</span>
-                  <span :if={!done} class="text-[10px] text-[#2a2a2a] group-hover:text-[#5a9bcf] transition-colors shrink-0">></span>
-                  <span class={"text-sm " <> if(done, do: "text-[#3a3a3a] line-through", else: "text-[#e8dcc0]")}>{win}</span>
+                  <span
+                    :if={!done}
+                    class="text-[10px] text-[#2a2a2a] group-hover:text-[#5a9bcf] transition-colors shrink-0"
+                  >
+                    >
+                  </span>
+                  <span class={"text-sm " <> if(done, do: "text-[#3a3a3a] line-through", else: "text-[#e8dcc0]")}>
+                    {win}
+                  </span>
                 </button>
               <% end %>
             </div>
           </div>
 
           <%!-- Warnings --%>
-          <div :if={@brief.warnings != []} class="rounded-[8px] border border-[#1a1a1a]/50 bg-[#080808] overflow-hidden">
+          <div
+            :if={@brief.warnings != []}
+            class="rounded-[8px] border border-[#1a1a1a]/50 bg-[#080808] overflow-hidden"
+          >
             <div class="px-4 py-2.5 border-b border-[#1a1a1a] flex items-center gap-2">
-              <span class="text-[11px] text-[#3a3a3a] uppercase tracking-wider font-medium">Warnings</span>
+              <span class="text-[11px] text-[#3a3a3a] uppercase tracking-wider font-medium">
+                Warnings
+              </span>
             </div>
             <div class="divide-y divide-[#111]">
               <%= for warning <- @brief.warnings do %>
@@ -837,6 +1348,9 @@ defmodule CortexWeb.DashboardLive.Index do
             <div>
               <div class="text-[#ffd04a] text-xl font-bold tracking-wide">DAILY BRIEF</div>
               <p class="text-[#3a3a3a] text-sm mt-1">{@brief.greeting}</p>
+              <p :if={@brief.energy_suggestion} class="text-[#2a2a2a] text-[10px] font-mono mt-1">
+                {@brief.energy_suggestion}
+              </p>
             </div>
             <button
               phx-click="dismiss_brief"
@@ -847,52 +1361,90 @@ defmodule CortexWeb.DashboardLive.Index do
           </div>
 
           <%!-- Reuse same cards — money, pipeline, build, quick wins, warnings --%>
-          <div :if={@brief.money_moves != []} class="rounded-[8px] border border-[#1a1a1a] bg-[#080808] overflow-hidden">
+          <div
+            :if={@brief.money_moves != []}
+            class="rounded-[8px] border border-[#1a1a1a] bg-[#080808] overflow-hidden"
+          >
             <div class="px-4 py-2.5 border-b border-[#1a1a1a] flex items-center gap-2">
               <span class="w-2 h-2 rounded-full bg-[#ffd04a]" />
-              <span class="text-[11px] text-[#ffd04a] uppercase tracking-wider font-medium">Money Moves</span>
+              <span class="text-[11px] text-[#ffd04a] uppercase tracking-wider font-medium">
+                Money Moves
+              </span>
             </div>
             <div class="divide-y divide-[#111]">
               <%= for move <- @brief.money_moves do %>
-                <button phx-click="launch_money" phx-value-action={move.action} class="w-full px-4 py-3 flex items-center justify-between hover:bg-[#0f0f0f] transition-colors cursor-pointer text-left group">
+                <button
+                  phx-click="launch_money"
+                  phx-value-action={move.action}
+                  class="w-full px-4 py-3 flex items-center justify-between hover:bg-[#0f0f0f] transition-colors cursor-pointer text-left group"
+                >
                   <div class="flex items-center gap-2 min-w-0">
-                    <span class="text-[10px] text-[#2a2a2a] group-hover:text-[#ffd04a] transition-colors shrink-0">></span>
+                    <span class="text-[10px] text-[#2a2a2a] group-hover:text-[#ffd04a] transition-colors shrink-0">
+                      >
+                    </span>
                     <span class="text-sm text-[#e8dcc0]">{move.action}</span>
                   </div>
-                  <span class={"text-[10px] font-mono px-2 py-0.5 rounded-[5px] " <> urgency_class(move.priority)}>{move.priority}</span>
+                  <span class={"text-[10px] font-mono px-2 py-0.5 rounded-[5px] " <> urgency_class(move.priority)}>
+                    {move.priority}
+                  </span>
                 </button>
               <% end %>
             </div>
           </div>
 
-          <div :if={@brief.build_tasks != []} class="rounded-[8px] border border-[#1a1a1a] bg-[#080808] overflow-hidden">
+          <div
+            :if={@brief.build_tasks != []}
+            class="rounded-[8px] border border-[#1a1a1a] bg-[#080808] overflow-hidden"
+          >
             <div class="px-4 py-2.5 border-b border-[#1a1a1a] flex items-center gap-2">
               <span class="w-2 h-2 rounded-full bg-[#5ea85e]" />
-              <span class="text-[11px] text-[#5ea85e] uppercase tracking-wider font-medium">Build</span>
+              <span class="text-[11px] text-[#5ea85e] uppercase tracking-wider font-medium">
+                Build
+              </span>
             </div>
             <div class="divide-y divide-[#111]">
               <%= for task <- @brief.build_tasks do %>
-                <button phx-click="launch_task" phx-value-project={task.project} phx-value-task={task.action} class="w-full px-4 py-3 flex items-center justify-between hover:bg-[#0f0f0f] transition-colors cursor-pointer text-left group">
+                <button
+                  phx-click="launch_task"
+                  phx-value-project={task.project}
+                  phx-value-task={task.action}
+                  class="w-full px-4 py-3 flex items-center justify-between hover:bg-[#0f0f0f] transition-colors cursor-pointer text-left group"
+                >
                   <div class="flex items-center gap-3 min-w-0">
-                    <span class="text-[10px] text-[#2a2a2a] group-hover:text-[#5ea85e] transition-colors shrink-0">></span>
+                    <span class="text-[10px] text-[#2a2a2a] group-hover:text-[#5ea85e] transition-colors shrink-0">
+                      >
+                    </span>
                     <span class="text-sm text-[#e8dcc0] font-medium shrink-0">{task.project}</span>
                     <span class="text-[11px] text-[#3a3a3a] truncate">{task.action}</span>
                   </div>
-                  <span class={"text-[10px] font-mono " <> score_color(task.score)}>{task.score}</span>
+                  <span class={"text-[10px] font-mono " <> score_color(task.score)}>
+                    {task.score}
+                  </span>
                 </button>
               <% end %>
             </div>
           </div>
 
-          <div :if={@brief.quick_wins != []} class="rounded-[8px] border border-[#1a1a1a] bg-[#080808] overflow-hidden">
+          <div
+            :if={@brief.quick_wins != []}
+            class="rounded-[8px] border border-[#1a1a1a] bg-[#080808] overflow-hidden"
+          >
             <div class="px-4 py-2.5 border-b border-[#1a1a1a] flex items-center gap-2">
               <span class="w-2 h-2 rounded-full bg-[#5a9bcf]" />
-              <span class="text-[11px] text-[#5a9bcf] uppercase tracking-wider font-medium">Quick Wins</span>
+              <span class="text-[11px] text-[#5a9bcf] uppercase tracking-wider font-medium">
+                Quick Wins
+              </span>
             </div>
             <div class="divide-y divide-[#111]">
               <%= for win <- @brief.quick_wins do %>
-                <button phx-click="launch_quick_win" phx-value-task={win} class="w-full px-4 py-2.5 hover:bg-[#0f0f0f] transition-colors cursor-pointer text-left group flex items-center gap-2">
-                  <span class="text-[10px] text-[#2a2a2a] group-hover:text-[#5a9bcf] transition-colors shrink-0">></span>
+                <button
+                  phx-click="launch_quick_win"
+                  phx-value-task={win}
+                  class="w-full px-4 py-2.5 hover:bg-[#0f0f0f] transition-colors cursor-pointer text-left group flex items-center gap-2"
+                >
+                  <span class="text-[10px] text-[#2a2a2a] group-hover:text-[#5a9bcf] transition-colors shrink-0">
+                    >
+                  </span>
                   <span class="text-sm text-[#e8dcc0]">{win}</span>
                 </button>
               <% end %>
@@ -960,7 +1512,9 @@ defmodule CortexWeb.DashboardLive.Index do
             <div :if={@workspaces != [] && @search_query == ""}>
               <div class="h-px bg-[#1a1a1a] mx-3 my-1" />
               <div class="px-4 py-1.5 flex items-center justify-between">
-                <span class="text-[10px] text-[#3a3a3a] uppercase tracking-wider font-medium">Workspaces</span>
+                <span class="text-[10px] text-[#3a3a3a] uppercase tracking-wider font-medium">
+                  Workspaces
+                </span>
                 <span class="text-[10px] text-[#2a2a2a] font-mono">Cmd+Shift+S to save</span>
               </div>
               <%= for ws <- @workspaces do %>
@@ -972,7 +1526,9 @@ defmodule CortexWeb.DashboardLive.Index do
                   <div class="flex items-center gap-3 min-w-0">
                     <span class="text-[#ffd04a] font-mono text-xs shrink-0">W</span>
                     <span class="truncate">{ws.name}</span>
-                    <span :if={ws.description} class="text-[10px] text-[#3a3a3a] truncate max-w-48">{ws.description}</span>
+                    <span :if={ws.description} class="text-[10px] text-[#3a3a3a] truncate max-w-48">
+                      {ws.description}
+                    </span>
                   </div>
                   <span class="text-[10px] text-[#2a2a2a] font-mono group-hover:text-[#3a3a3a]">
                     {length(ws.sessions)} sessions
@@ -996,50 +1552,71 @@ defmodule CortexWeb.DashboardLive.Index do
             <div class="h-px bg-[#1a1a1a] mx-3 my-1" />
             <%= for project <- sorted_projects(filtered_projects(@projects, @search_query), @priority_map) do %>
               <% prio = Map.get(@priority_map, project.name) %>
-              <button
-                phx-click="new_project_session"
-                phx-value-name={project.name}
-                class="w-full px-4 py-2 text-left text-sm text-[#e8dcc0] hover:bg-[#141414] flex items-center justify-between transition-colors cursor-pointer group"
-              >
-                <div class="flex items-center gap-3 min-w-0">
-                  <span class={"w-1.5 h-1.5 rounded-full shrink-0 " <> project_status_color(project.status)} />
-                  <span class="truncate">{project.name}</span>
-                  <span
-                    :if={prio && prio.top_action}
-                    class="text-[10px] text-[#ffd04a]/60 truncate max-w-48 hidden sm:inline"
-                  >
-                    {prio.top_action}
-                  </span>
-                </div>
-                <div class="flex items-center gap-2 shrink-0">
-                  <span :if={git = @git_statuses[project.name]} class="flex items-center gap-1">
-                    <span class="text-[10px] text-[#3a3a3a] font-mono">{git.branch}</span>
+              <div class="flex items-center group">
+                <button
+                  phx-click="new_project_session"
+                  phx-value-name={project.name}
+                  class="flex-1 px-4 py-2 text-left text-sm text-[#e8dcc0] hover:bg-[#141414] flex items-center justify-between transition-colors cursor-pointer"
+                >
+                  <div class="flex items-center gap-3 min-w-0">
+                    <span class={"w-1.5 h-1.5 rounded-full shrink-0 " <> project_status_color(project.status)} />
+                    <span class="truncate">{project.name}</span>
                     <span
-                      :if={git.dirty}
-                      class="w-1.5 h-1.5 rounded-full bg-[#ffd04a]"
-                      title={"#{git.changes} changes"}
-                    />
-                  </span>
-                  <span :if={prio} class={"text-[10px] font-mono " <> score_color(prio.score)}>
-                    {prio.score}
-                  </span>
-                  <span class="text-[10px] text-[#2a2a2a] font-mono group-hover:text-[#3a3a3a]">
-                    {project.status}
-                  </span>
-                </div>
-              </button>
+                      :if={prio && prio.top_action}
+                      class="text-[10px] text-[#ffd04a]/60 truncate max-w-48 hidden sm:inline"
+                    >
+                      {prio.top_action}
+                    </span>
+                  </div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <span :if={git = @git_statuses[project.name]} class="flex items-center gap-1">
+                      <span class="text-[10px] text-[#3a3a3a] font-mono">{git.branch}</span>
+                      <span
+                        :if={git.dirty}
+                        class="w-1.5 h-1.5 rounded-full bg-[#ffd04a]"
+                        title={"#{git.changes} changes"}
+                      />
+                    </span>
+                    <span :if={prio} class={"text-[10px] font-mono " <> score_color(prio.score)}>
+                      {prio.score}
+                    </span>
+                    <span class="text-[10px] text-[#2a2a2a] font-mono group-hover:text-[#3a3a3a]">
+                      {project.status}
+                    </span>
+                  </div>
+                </button>
+                <button
+                  phx-click="burst_mode"
+                  phx-value-name={project.name}
+                  title="Burst Mode: spawn full project context"
+                  class="px-2 py-2 text-[10px] text-[#2a2a2a] hover:text-[#ffd04a] hover:bg-[#141414] transition-colors cursor-pointer opacity-0 group-hover:opacity-100 font-mono shrink-0"
+                >
+                  BURST
+                </button>
+              </div>
             <% end %>
           </div>
         </div>
       </div>
 
-      <%!-- Toast Notifications --%>
+      <%!-- Toast Notifications — errors reframed as attack surfaces --%>
       <div class="fixed bottom-4 right-4 z-50 space-y-2 pointer-events-none">
         <%= for toast <- @toasts do %>
-          <div class={"pointer-events-auto animate-slide-in px-4 py-2.5 rounded-[7px] border shadow-lg text-sm font-mono flex items-center gap-2 " <> toast_class(toast.severity)}>
-            <span class={"w-2 h-2 rounded-full shrink-0 " <> toast_dot_class(toast.severity)} />
-            <span class="truncate max-w-sm">{toast.message}</span>
-            <button phx-click="dismiss_toast_manual" phx-value-id={toast.id} class="text-[10px] opacity-50 hover:opacity-100 ml-2 shrink-0 cursor-pointer">x</button>
+          <div class={"pointer-events-auto animate-slide-in px-4 py-2.5 rounded-[7px] border shadow-lg font-mono " <> toast_class(toast.severity)}>
+            <div class="flex items-center gap-2 text-sm">
+              <span class={"w-2 h-2 rounded-full shrink-0 " <> toast_dot_class(toast.severity)} />
+              <span class="truncate max-w-sm">{toast.message}</span>
+              <button
+                phx-click="dismiss_toast_manual"
+                phx-value-id={toast.id}
+                class="text-[10px] opacity-50 hover:opacity-100 ml-2 shrink-0 cursor-pointer"
+              >
+                x
+              </button>
+            </div>
+            <div :if={toast[:action_hint]} class="text-[10px] text-[#5a5a5a] mt-1 ml-4 pl-0.5">
+              {toast.action_hint}
+            </div>
           </div>
         <% end %>
       </div>
@@ -1096,4 +1673,49 @@ defmodule CortexWeb.DashboardLive.Index do
   defp toast_dot_class(:warning), do: "bg-[#ffd04a]"
   defp toast_dot_class(:success), do: "bg-[#5ea85e]"
   defp toast_dot_class(_), do: "bg-[#5a5a5a]"
+
+  # Energy cycle helpers
+  defp energy_dot_class(:mud), do: "bg-[#5a5a5a]"
+  defp energy_dot_class(:rising), do: "bg-[#e8b839]"
+  defp energy_dot_class(:peak), do: "bg-[#5ea85e]"
+  defp energy_dot_class(:winding_down), do: "bg-[#5a9bcf]"
+  defp energy_dot_class(_), do: "bg-[#2a2a2a]"
+
+  defp energy_text_class(:mud), do: "text-[#5a5a5a]"
+  defp energy_text_class(:rising), do: "text-[#e8b839]"
+  defp energy_text_class(:peak), do: "text-[#5ea85e]"
+  defp energy_text_class(:winding_down), do: "text-[#5a9bcf]"
+  defp energy_text_class(_), do: "text-[#2a2a2a]"
+
+  defp energy_label(:mud), do: "MUD"
+  defp energy_label(:rising), do: "RISING"
+  defp energy_label(:peak), do: "PEAK"
+  defp energy_label(:winding_down), do: "WIND"
+  defp energy_label(:rest), do: "REST"
+
+  defp format_flow_time(minutes) when minutes < 60, do: "#{minutes}m"
+  defp format_flow_time(minutes), do: "#{div(minutes, 60)}h#{rem(minutes, 60)}m"
+
+  # Activity DNA labels and colors
+  defp activity_label(:build), do: "build"
+  defp activity_label(:test), do: "test"
+  defp activity_label(:deploy), do: "deploy"
+  defp activity_label(:debug), do: "debug"
+  defp activity_label(:agent), do: "agent"
+  defp activity_label(:git), do: "git"
+  defp activity_label(:flow), do: "flow"
+  defp activity_label(:idle), do: "idle"
+  defp activity_label(other), do: to_string(other)
+
+  defp resume_urgency_color(score) when score >= 80, do: "text-[#ffd04a]"
+  defp resume_urgency_color(score) when score >= 50, do: "text-[#e8dcc0]/60"
+  defp resume_urgency_color(_), do: "text-[#3a3a3a]"
+
+  defp activity_color(:build), do: "text-[#5ea85e]"
+  defp activity_color(:test), do: "text-[#5a9bcf]"
+  defp activity_color(:deploy), do: "text-[#ffd04a]"
+  defp activity_color(:debug), do: "text-[#e05252]"
+  defp activity_color(:agent), do: "text-[#b07aff]"
+  defp activity_color(:flow), do: "text-[#ffd04a]"
+  defp activity_color(_), do: "text-[#3a3a3a]"
 end
