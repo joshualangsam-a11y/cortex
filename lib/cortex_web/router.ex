@@ -53,8 +53,11 @@ defmodule CortexWeb.Router do
     get "/", PageController, :home
   end
 
-  # Other scopes may use custom stacks.
-  # scope "/api", CortexWeb do
-  #   pipe_through :api
-  # end
+  # Twin API — local only, no auth
+  scope "/api", CortexWeb do
+    pipe_through :api
+
+    get "/state", TwinApiController, :state
+    post "/twin/insight", TwinApiController, :insight
+  end
 end
