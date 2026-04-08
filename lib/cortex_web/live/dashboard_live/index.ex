@@ -15,7 +15,14 @@ defmodule CortexWeb.DashboardLive.Index do
     ResumePoint,
     SessionDNA,
     SmartResume,
-    ThermalThrottle
+    ThermalThrottle,
+    TokenEconomics,
+    EntropyDetector,
+    CompactionAdvisor,
+    IntentCompression,
+    CrashPredictor,
+    FlowPredictor,
+    CompoundScorecard
   }
 
   @impl true
@@ -27,6 +34,8 @@ defmodule CortexWeb.DashboardLive.Index do
       Phoenix.PubSub.subscribe(Cortex.PubSub, "terminal:notifications")
       Phoenix.PubSub.subscribe(Cortex.PubSub, MomentumEngine.topic())
       Phoenix.PubSub.subscribe(Cortex.PubSub, ThermalThrottle.topic())
+      Phoenix.PubSub.subscribe(Cortex.PubSub, TokenEconomics.topic())
+      Phoenix.PubSub.subscribe(Cortex.PubSub, EntropyDetector.topic())
     end
 
     sessions = Terminals.list_sessions()
@@ -85,6 +94,13 @@ defmodule CortexWeb.DashboardLive.Index do
       |> assign(:thermal_state, :normal)
       |> assign(:thermal_suggestion, nil)
       |> assign(:show_stats, false)
+      |> assign(:compression_metrics, safe_compression_metrics())
+      |> assign(:entropy_state, :none)
+      |> assign(:entropy_suggestion, nil)
+      |> assign(:compaction_advice, safe_compaction_advice())
+      |> assign(:crash_prediction, safe_crash_prediction())
+      |> assign(:flow_prediction, safe_flow_prediction())
+      |> assign(:scorecard, safe_scorecard())
 
     {:ok, socket}
   end
@@ -368,6 +384,10 @@ defmodule CortexWeb.DashboardLive.Index do
     {:noreply, assign(socket, thermal_state: :normal, thermal_suggestion: nil)}
   end
 
+  def handle_event("dismiss_entropy", _params, socket) do
+    {:noreply, assign(socket, entropy_state: :none, entropy_suggestion: nil)}
+  end
+
   def handle_event("toggle_stats", _params, socket) do
     {:noreply, assign(socket, :show_stats, !socket.assigns[:show_stats])}
   end
@@ -417,6 +437,8 @@ defmodule CortexWeb.DashboardLive.Index do
     Terminals.write(id, decoded)
     # Feed momentum engine — tracks keystroke velocity for flow detection
     MomentumEngine.record_input(id)
+    # Feed token economics — tracks input volume for compression ratio
+    TokenEconomics.record_input(id, byte_size(decoded))
     {:noreply, socket}
   end
 
@@ -527,6 +549,14 @@ defmodule CortexWeb.DashboardLive.Index do
     {:noreply, assign(socket, thermal_state: thermal_state, thermal_suggestion: suggestion)}
   end
 
+  def handle_info({:session_economics, _id, _economics}, socket) do
+    {:noreply, assign(socket, compression_metrics: safe_compression_metrics())}
+  end
+
+  def handle_info({:entropy_detected, _session_id, level, suggestion}, socket) do
+    {:noreply, assign(socket, entropy_state: level, entropy_suggestion: suggestion)}
+  end
+
   def handle_info({:dismiss_toast, toast_id}, socket) do
     toasts = Enum.reject(socket.assigns.toasts, &(&1.id == toast_id))
     {:noreply, assign(socket, :toasts, toasts)}
@@ -543,7 +573,12 @@ defmodule CortexWeb.DashboardLive.Index do
     {:noreply,
      socket
      |> assign(:energy, EnergyCycle.state())
-     |> assign(:flow_stats, load_flow_stats())}
+     |> assign(:flow_stats, load_flow_stats())
+     |> assign(:compression_metrics, safe_compression_metrics())
+     |> assign(:compaction_advice, safe_compaction_advice())
+     |> assign(:crash_prediction, safe_crash_prediction())
+     |> assign(:flow_prediction, safe_flow_prediction())
+     |> assign(:scorecard, safe_scorecard())}
   end
 
   # Helpers
@@ -617,9 +652,21 @@ defmodule CortexWeb.DashboardLive.Index do
     dna = safe_dna_summary()
     thermal = safe_thermal_state()
     insights = safe_insights()
+    compression = safe_compression_metrics()
+    compaction = safe_compaction_advice()
+    architect = safe_architect_recommendation()
+    crash = safe_crash_prediction()
+    flow_pred = safe_flow_prediction()
+    scorecard = safe_scorecard()
 
     assigns =
       assigns
+      |> assign(:compression, compression)
+      |> assign(:compaction, compaction)
+      |> assign(:architect, architect)
+      |> assign(:crash, crash)
+      |> assign(:flow_pred, flow_pred)
+      |> assign(:scorecard, scorecard)
       |> assign(:week, week)
       |> assign(:calibration, calibration)
       |> assign(:insights, insights)
@@ -692,6 +739,97 @@ defmodule CortexWeb.DashboardLive.Index do
         </div>
       </div>
 
+      <%!-- Cognitive Economics --%>
+      <div class="mt-3 pt-3 border-t border-[#1a1a1a]">
+        <span class="text-[9px] text-[#ffd04a] uppercase tracking-wider">Cognitive Economics</span>
+        <div class="grid grid-cols-4 gap-4 mt-2">
+          <div class="space-y-1">
+            <span class="text-[9px] text-[#3a3a3a] uppercase tracking-wider">Compression</span>
+            <div class={"text-sm font-mono " <> compression_color(@compression.overall_ratio)}>
+              {@compression.overall_ratio}x
+            </div>
+            <div class="text-[10px] text-[#5a5a5a] font-mono">
+              {@compression.total_code_lines} lines / {@compression.total_input_chars} chars
+            </div>
+          </div>
+          <div class="space-y-1">
+            <span class="text-[9px] text-[#3a3a3a] uppercase tracking-wider">Efficiency</span>
+            <div class={"text-sm font-mono " <> efficiency_color(@compression.efficiency_pct)}>
+              {@compression.efficiency_pct}%
+            </div>
+            <div class="text-[10px] text-[#5a5a5a] font-mono">
+              signal / (signal + entropy)
+            </div>
+          </div>
+          <div class="space-y-1">
+            <span class="text-[9px] text-[#3a3a3a] uppercase tracking-wider">Context</span>
+            <div class={"text-sm font-mono " <> urgency_color(@compaction.urgency)}>
+              {@compaction.estimated_context_pct}%
+            </div>
+            <div class="text-[10px] text-[#5a5a5a] font-mono">
+              {compaction_label(@compaction.urgency)}
+            </div>
+          </div>
+          <div :if={@architect} class="space-y-1">
+            <span class="text-[9px] text-[#3a3a3a] uppercase tracking-wider">Recommended</span>
+            <div class="text-[11px] text-[#e8dcc0] font-mono">{@architect.recommendation}</div>
+            <div class="text-[9px] text-[#3a3a3a] font-mono">{@architect.evidence}</div>
+          </div>
+        </div>
+        <div :if={@compression.insight} class="mt-2">
+          <span class="text-[10px] text-[#5a9bcf] font-mono">{@compression.insight}</span>
+        </div>
+        <div :if={@compaction.should_compact} class="mt-1">
+          <span class="text-[10px] text-[#e8b839] font-mono">{@compaction.reason}</span>
+        </div>
+      </div>
+
+      <%!-- Predictions --%>
+      <div class="mt-3 pt-3 border-t border-[#1a1a1a]">
+        <span class="text-[9px] text-[#ffd04a] uppercase tracking-wider">Predictions</span>
+        <div class="grid grid-cols-3 gap-4 mt-2">
+          <div class="space-y-1">
+            <span class="text-[9px] text-[#3a3a3a] uppercase tracking-wider">Flow Window</span>
+            <div :if={@flow_pred.best_window} class="text-[11px] text-[#5ea85e] font-mono">
+              {format_hour(@flow_pred.best_window.hour_start)}-{format_hour(
+                @flow_pred.best_window.hour_end
+              )}
+              <span class="text-[9px] text-[#3a3a3a]">
+                {round(@flow_pred.best_window.probability * 100)}%
+              </span>
+            </div>
+            <div :if={!@flow_pred.best_window} class="text-[10px] text-[#3a3a3a] font-mono">
+              building baseline...
+            </div>
+            <div class="text-[9px] text-[#2a2a2a] font-mono">{@flow_pred.day_insight}</div>
+          </div>
+          <div class="space-y-1">
+            <span class="text-[9px] text-[#3a3a3a] uppercase tracking-wider">Crash Risk</span>
+            <div class={"text-[11px] font-mono " <> crash_color(@crash.severity)}>
+              {crash_label(@crash.severity)}
+            </div>
+            <div :if={@crash.minutes_until} class="text-[10px] text-[#5a5a5a] font-mono">
+              ~{@crash.minutes_until}min
+            </div>
+            <div :if={@crash.signals != []} class="text-[9px] text-[#3a3a3a] font-mono">
+              {hd(@crash.signals)}
+            </div>
+          </div>
+          <div class="space-y-1">
+            <span class="text-[9px] text-[#3a3a3a] uppercase tracking-wider">
+              Prediction Accuracy
+            </span>
+            <div :if={@scorecard.total > 0} class="text-[11px] text-[#e8dcc0] font-mono">
+              {@scorecard.accuracy_pct}%
+              <span class="text-[9px] text-[#3a3a3a]">{@scorecard.total} scored</span>
+            </div>
+            <div :if={@scorecard.total == 0} class="text-[10px] text-[#3a3a3a] font-mono">
+              calibrating...
+            </div>
+          </div>
+        </div>
+      </div>
+
       <%!-- Activity DNA --%>
       <div :if={map_size(@dna.activity_breakdown) > 0} class="mt-3 pt-3 border-t border-[#1a1a1a]">
         <span class="text-[9px] text-[#3a3a3a] uppercase tracking-wider">Session DNA</span>
@@ -722,6 +860,35 @@ defmodule CortexWeb.DashboardLive.Index do
       </div>
     </div>
     """
+  end
+
+  defp safe_compression_metrics do
+    IntentCompression.metrics()
+  rescue
+    _ ->
+      %{
+        overall_ratio: 0.0,
+        efficiency_pct: 0.0,
+        total_code_lines: 0,
+        total_input_chars: 0,
+        total_entropy: 0,
+        session_count: 0,
+        insight: nil
+      }
+  end
+
+  defp safe_compaction_advice do
+    CompactionAdvisor.advise()
+  rescue
+    _ ->
+      %{
+        should_compact: false,
+        urgency: :low,
+        reason: "No data.",
+        estimated_context_pct: 0,
+        optimal_timing: "",
+        signals: []
+      }
   end
 
   defp safe_week_stats do
@@ -760,6 +927,71 @@ defmodule CortexWeb.DashboardLive.Index do
   rescue
     _ -> []
   end
+
+  defp safe_crash_prediction do
+    CrashPredictor.predict()
+  rescue
+    _ ->
+      %{
+        crash_likely: false,
+        severity: :none,
+        signals: [],
+        suggestion: "All clear.",
+        minutes_until: nil,
+        confidence: 0
+      }
+  end
+
+  defp safe_flow_prediction do
+    FlowPredictor.predict_today()
+  rescue
+    _ -> %{windows: [], best_window: nil, day_outlook: :low, day_insight: "", confidence: 0}
+  end
+
+  defp safe_scorecard do
+    CompoundScorecard.overall_accuracy()
+  rescue
+    _ -> %{total: 0, accurate: 0, accuracy_pct: 0.0, types: 0}
+  end
+
+  defp safe_architect_recommendation do
+    Cortex.Intelligence.SessionArchitect.top_recommendation()
+  rescue
+    _ -> nil
+  end
+
+  defp compression_color(ratio) when ratio >= 30, do: "text-[#5ea85e]"
+  defp compression_color(ratio) when ratio >= 10, do: "text-[#ffd04a]"
+  defp compression_color(ratio) when ratio > 0, do: "text-[#e8dcc0]"
+  defp compression_color(_), do: "text-[#3a3a3a]"
+
+  defp efficiency_color(pct) when pct >= 70, do: "text-[#5ea85e]"
+  defp efficiency_color(pct) when pct >= 40, do: "text-[#ffd04a]"
+  defp efficiency_color(pct) when pct > 0, do: "text-[#e05252]"
+  defp efficiency_color(_), do: "text-[#3a3a3a]"
+
+  defp urgency_color(:critical), do: "text-[#e05252]"
+  defp urgency_color(:high), do: "text-[#e8b839]"
+  defp urgency_color(:medium), do: "text-[#e8dcc0]"
+  defp urgency_color(_), do: "text-[#5ea85e]"
+
+  defp compaction_label(:critical), do: "COMPACT NOW"
+  defp compaction_label(:high), do: "compact soon"
+  defp compaction_label(:medium), do: "healthy"
+  defp compaction_label(_), do: "clean"
+
+  defp crash_color(:high), do: "text-[#e05252]"
+  defp crash_color(:medium), do: "text-[#e8b839]"
+  defp crash_color(:low), do: "text-[#5a5a5a]"
+  defp crash_color(_), do: "text-[#5ea85e]"
+
+  defp crash_label(:high), do: "IMMINENT"
+  defp crash_label(:medium), do: "building"
+  defp crash_label(:low), do: "watch"
+  defp crash_label(_), do: "clear"
+
+  defp format_hour(h) when h >= 12, do: "#{if h > 12, do: h - 12, else: h}PM"
+  defp format_hour(h), do: "#{h}AM"
 
   defp thermal_color(:normal), do: "text-[#3a3a3a]"
   defp thermal_color(:elevated), do: "text-[#5a5a5a]"
@@ -825,6 +1057,16 @@ defmodule CortexWeb.DashboardLive.Index do
             <span :if={@flow_stats.total_minutes > 0} class="text-[10px] text-[#2a2a2a] font-mono">
               {format_flow_time(@flow_stats.total_minutes)} today
             </span>
+          </div>
+          <%!-- Compression indicator --%>
+          <div
+            :if={@compression_metrics.overall_ratio > 0}
+            class="flex items-center gap-1.5 ml-2 pl-3 border-l border-[#1a1a1a]"
+          >
+            <span class={"text-[10px] font-mono " <> compression_color(@compression_metrics.overall_ratio)}>
+              {@compression_metrics.overall_ratio}x
+            </span>
+            <span class="text-[10px] text-[#2a2a2a] font-mono">compress</span>
           </div>
           <%!-- Priority indicator --%>
           <div
@@ -950,6 +1192,49 @@ defmodule CortexWeb.DashboardLive.Index do
         <button
           phx-click="dismiss_thermal"
           class="text-[10px] text-[#3a3a3a] hover:text-[#e05252] ml-2 shrink-0 cursor-pointer"
+        >
+          dismiss
+        </button>
+      </div>
+
+      <%!-- Crash Prediction Banner --%>
+      <div
+        :if={@crash_prediction.severity in [:medium, :high]}
+        class="mx-1.5 mt-1.5 px-4 py-2.5 rounded-[7px] border border-[#e8b839]/20 bg-[#0a0805] flex items-center gap-3 shrink-0 animate-slide-in"
+      >
+        <span class={[
+          "w-2 h-2 rounded-full shrink-0",
+          @crash_prediction.severity == :high && "bg-[#e05252] animate-pulse",
+          @crash_prediction.severity == :medium && "bg-[#e8b839]"
+        ]} />
+        <span class={[
+          "text-[11px] font-mono flex-1",
+          @crash_prediction.severity == :high && "text-[#e05252]",
+          @crash_prediction.severity == :medium && "text-[#e8b839]"
+        ]}>
+          {@crash_prediction.suggestion}
+        </span>
+        <span
+          :if={@crash_prediction.minutes_until}
+          class="text-[9px] text-[#3a3a3a] font-mono shrink-0"
+        >
+          ~{@crash_prediction.minutes_until}min
+        </span>
+      </div>
+
+      <%!-- Entropy Warning Banner --%>
+      <div
+        :if={@entropy_state == :high && @entropy_suggestion}
+        class="mx-1.5 mt-1.5 px-4 py-2.5 rounded-[7px] border border-[#e8b839]/20 bg-[#0a0805] flex items-center gap-3 shrink-0 animate-slide-in"
+      >
+        <span class="w-2 h-2 rounded-full bg-[#e8b839] animate-pulse shrink-0" />
+        <span class="text-[11px] text-[#e8b839] font-mono flex-1">{@entropy_suggestion}</span>
+        <span class="text-[9px] text-[#3a3a3a] font-mono shrink-0">
+          entropy rising — try a different approach
+        </span>
+        <button
+          phx-click="dismiss_entropy"
+          class="text-[10px] text-[#3a3a3a] hover:text-[#e8b839] ml-2 shrink-0 cursor-pointer"
         >
           dismiss
         </button>

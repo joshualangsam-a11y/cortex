@@ -25,6 +25,8 @@ defmodule Cortex.Application do
       Cortex.Intelligence.MomentumEngine,
       Cortex.Intelligence.SessionDNA,
       Cortex.Intelligence.ThermalThrottle,
+      Cortex.Intelligence.TokenEconomics,
+      Cortex.Intelligence.EntropyDetector,
       # Restores crashed sessions after all dependencies are up
       {Task, &restore_crashed_sessions/0},
       CortexWeb.Endpoint

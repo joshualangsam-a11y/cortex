@@ -9,9 +9,13 @@ defmodule Cortex.Intelligence.DailyBrief do
 
   alias Cortex.Intelligence.{
     BriefCompletion,
+    CompactionAdvisor,
+    CrashPredictor,
     EnergyCycle,
     FlowCalibrator,
     FlowHistory,
+    FlowPredictor,
+    ProjectMatcher,
     SessionDNA
   }
 
@@ -34,7 +38,11 @@ defmodule Cortex.Intelligence.DailyBrief do
     :energy_level,
     :energy_suggestion,
     :today_recap,
-    :flow_calibration_status
+    :flow_calibration_status,
+    :flow_prediction,
+    :crash_prediction,
+    :project_suggestion,
+    :compaction_advice
   ]
 
   @doc """
@@ -64,7 +72,11 @@ defmodule Cortex.Intelligence.DailyBrief do
       energy_level: energy.level,
       energy_suggestion: energy.suggestion,
       today_recap: build_today_recap(),
-      flow_calibration_status: safe_calibration_status()
+      flow_calibration_status: safe_calibration_status(),
+      flow_prediction: safe_flow_prediction(),
+      crash_prediction: safe_crash_prediction(),
+      project_suggestion: safe_project_suggestion(),
+      compaction_advice: safe_compaction_advice()
     }
   end
 
@@ -412,6 +424,30 @@ defmodule Cortex.Intelligence.DailyBrief do
     %BriefCompletion{}
     |> BriefCompletion.changeset(%{date: today, action_hash: hash, section: section})
     |> Repo.insert(on_conflict: :nothing)
+  end
+
+  defp safe_flow_prediction do
+    FlowPredictor.brief_prediction()
+  rescue
+    _ -> nil
+  end
+
+  defp safe_crash_prediction do
+    CrashPredictor.brief_line()
+  rescue
+    _ -> nil
+  end
+
+  defp safe_project_suggestion do
+    ProjectMatcher.suggestion()
+  rescue
+    _ -> nil
+  end
+
+  defp safe_compaction_advice do
+    CompactionAdvisor.brief_line()
+  rescue
+    _ -> nil
   end
 
   @doc "Get all completed action hashes for today."
