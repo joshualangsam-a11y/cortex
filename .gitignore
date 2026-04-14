@@ -42,3 +42,6 @@ cortex-*.tar
 .env*
 !.env.example
 priv/scrollback/
+CLAUDE.md
+AGENTS.md
+.claude/
