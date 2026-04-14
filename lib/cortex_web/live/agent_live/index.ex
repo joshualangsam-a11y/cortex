@@ -353,6 +353,9 @@ defmodule CortexWeb.AgentLive.Index do
   defp tool_icon("bash"), do: "$"
   defp tool_icon("grep"), do: "?"
   defp tool_icon("glob"), do: "*"
+  defp tool_icon("terminal"), do: "T"
+  defp tool_icon("list_terminals"), do: "L"
+  defp tool_icon("write_terminal"), do: "→"
   defp tool_icon(_), do: ">"
 
   defp tool_status_color(:pending), do: "bg-[#5a5a5a]"

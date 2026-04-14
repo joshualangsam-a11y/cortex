@@ -12,7 +12,10 @@ defmodule Cortex.Agent.Tool do
     Cortex.Agent.Tools.FileEdit,
     Cortex.Agent.Tools.Bash,
     Cortex.Agent.Tools.Grep,
-    Cortex.Agent.Tools.Glob
+    Cortex.Agent.Tools.Glob,
+    Cortex.Agent.Tools.Terminal,
+    Cortex.Agent.Tools.ListSessions,
+    Cortex.Agent.Tools.WriteTerminal
   ]
 
   def all, do: @tools
