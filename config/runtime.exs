@@ -23,6 +23,11 @@ end
 config :cortex, CortexWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "3012"))]
 
+# Claude API key for Agent system
+if api_key = System.get_env("ANTHROPIC_API_KEY") do
+  config :cortex, :anthropic_api_key, api_key
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||

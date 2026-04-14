@@ -19,6 +19,8 @@ defmodule Cortex.Application do
       {Phoenix.PubSub, name: Cortex.PubSub},
       {Registry, keys: :unique, name: Cortex.Terminal.SessionRegistry},
       {DynamicSupervisor, name: Cortex.Terminal.SessionSupervisor, strategy: :one_for_one},
+      {Registry, keys: :unique, name: Cortex.Agent.SessionRegistry},
+      {DynamicSupervisor, name: Cortex.Agent.SessionSupervisor, strategy: :one_for_one},
       Cortex.Projects.Registry,
       Cortex.Intelligence.Prioritizer,
       Cortex.Intelligence.OutputMonitor,

@@ -43,6 +43,7 @@ defmodule CortexWeb.Router do
       live "/onboarding", Onboarding.WizardLive, :index
       live "/settings/projects", Settings.ProjectsLive, :index
       live "/settings/brain", Settings.BrainProfileLive, :index
+      live "/agent", AgentLive.Index, :index
     end
   end
 
