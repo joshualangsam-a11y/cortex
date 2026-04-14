@@ -10,6 +10,10 @@ defmodule Cortex.Accounts.User do
     field :name, :string
     field :tier, :string, default: "free"
     field :confirmed_at, :utc_datetime
+    field :stripe_customer_id, :string
+    field :stripe_subscription_id, :string
+    field :subscription_status, :string, default: "incomplete"
+    field :trial_ends_at, :utc_datetime
 
     timestamps(type: :utc_datetime)
   end

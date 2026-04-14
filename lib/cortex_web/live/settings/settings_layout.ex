@@ -33,6 +33,10 @@ defmodule CortexWeb.Settings.SettingsLayout do
           Brain Profile
         </.nav_item>
 
+        <.nav_item page={:billing} current={@current_page} href={~p"/settings/billing"}>
+          Billing
+        </.nav_item>
+
         <.nav_item page={:preferences} current={@current_page} href="#" disabled={true}>
           Preferences
         </.nav_item>

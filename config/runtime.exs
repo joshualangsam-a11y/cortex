@@ -28,6 +28,11 @@ if api_key = System.get_env("ANTHROPIC_API_KEY") do
   config :cortex, :anthropic_api_key, api_key
 end
 
+# Stripe
+config :stripity_stripe,
+  api_key: System.get_env("STRIPE_SECRET_KEY"),
+  signing_secret: System.get_env("STRIPE_WEBHOOK_SECRET")
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||

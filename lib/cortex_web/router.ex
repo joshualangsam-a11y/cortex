@@ -43,6 +43,7 @@ defmodule CortexWeb.Router do
       live "/onboarding", Onboarding.WizardLive, :index
       live "/settings/projects", Settings.ProjectsLive, :index
       live "/settings/brain", Settings.BrainProfileLive, :index
+      live "/settings/billing", Settings.BillingLive, :index
       live "/agent", AgentLive.Index, :index
     end
   end
@@ -53,6 +54,18 @@ defmodule CortexWeb.Router do
 
     live "/landing", LandingLive, :index
     get "/", PageController, :home
+  end
+
+  # Stripe webhooks — signature verified by StripeWebhookPlug
+  pipeline :stripe_webhook do
+    plug :accepts, ["json"]
+    plug CortexWeb.StripeWebhookPlug
+  end
+
+  scope "/webhooks", CortexWeb do
+    pipe_through :stripe_webhook
+
+    post "/stripe", StripeWebhookController, :handle
   end
 
   # Twin API — local only, no auth
