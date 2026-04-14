@@ -402,24 +402,99 @@ defmodule Cortex.Agent.Session do
 
   defp truncate_result(content), do: content
 
+
+
   defp build_system_prompt(cwd, opts) do
     project_name = Keyword.get(opts, :project_name, Path.basename(cwd))
     claude_md = read_claude_md(cwd)
+    intel = gather_intelligence()
 
     """
-    You are Cortex, an AI coding agent running inside a terminal mission control dashboard.
-    You have tools to read, write, and edit files, search codebases, and execute bash commands.
+    You are Cortex, an AI coding agent inside a terminal mission control dashboard.
+    You have filesystem tools AND can control the dashboard's terminal grid.
 
     Working directory: #{cwd}
     Project: #{project_name}
 
+    ## Tools
+    - file_read, file_write, file_edit — filesystem operations
+    - bash — quick shell commands (hidden, output returned)
+    - grep, glob — search files by content or pattern
+    - terminal — open a VISIBLE terminal in the dashboard (for servers, tests, watchers)
+    - list_terminals — see all active terminal sessions
+    - write_terminal — send input to a running terminal
+
+    ## When to use `terminal` vs `bash`
+    - Use `bash` for quick commands: git status, ls, compile checks
+    - Use `terminal` for long-running: dev servers, test suites, file watchers
+    - The user can SEE terminals in their dashboard grid — use this for transparency
+
     ## Rules
-    - Read files before editing them. Understand the pattern first.
+    - Read files before editing. Understand the pattern first.
     - Be concise in explanations, thorough in code.
-    - Use the bash tool for git, build, and test commands.
     - Use grep/glob to find files before making assumptions.
-    #{if claude_md, do: "\n## Project Context (from CLAUDE.md)\n\n#{claude_md}", else: ""}
+    #{intel}#{if claude_md, do: "\n## Project Context (from CLAUDE.md)\n\n#{claude_md}", else: ""}
     """
+  end
+
+  defp gather_intelligence do
+    parts = []
+
+    # Energy cycle
+    energy =
+      try do
+        Cortex.Intelligence.EnergyCycle.state()
+      rescue
+        _ -> nil
+      end
+
+    parts =
+      if energy do
+        phase = energy.phase
+        hint =
+          case phase do
+            :mud -> "User is in low-energy hours. Keep responses shorter, suggest lighter tasks."
+            :peak -> "User is in peak energy. Good time for deep work and complex tasks."
+            :winding_down -> "User is winding down. Wrap up threads, avoid starting big new work."
+            _ -> nil
+          end
+
+        if hint, do: parts ++ ["\n## User State\n- Energy: #{phase}" <> if(hint, do: "\n- #{hint}", else: "")], else: parts
+      else
+        parts
+      end
+
+    # Thermal state
+    thermal =
+      try do
+        Cortex.Intelligence.ThermalThrottle.state()
+      rescue
+        _ -> nil
+      end
+
+    parts =
+      if thermal && thermal != :normal do
+        parts ++ ["- Thermal: #{thermal} — user may be overloaded, be extra concise"]
+      else
+        parts
+      end
+
+    # Flow state
+    flow =
+      try do
+        Cortex.Intelligence.MomentumEngine.state()
+      rescue
+        _ -> nil
+      end
+
+    parts =
+      if flow && Map.get(flow, :flow_state) == :flowing do
+        parts ++ ["- Flow state: ACTIVE — minimize interruptions, stay focused on the task"]
+      else
+        parts
+      end
+
+    Enum.join(parts, "\n")
   end
 
   defp read_claude_md(cwd) do
