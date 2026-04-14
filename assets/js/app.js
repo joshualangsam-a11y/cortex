@@ -5,7 +5,7 @@ import topbar from "../vendor/topbar";
 import TerminalHook from "./hooks/terminal_hook";
 import CommandPaletteHook from "./hooks/command_palette_hook";
 import DragHook from "./hooks/drag_hook";
-import AgentChatHook from "./hooks/agent_chat_hook";
+import AgentChatHook, { AgentInputHook } from "./hooks/agent_chat_hook";
 
 let csrfToken = document
   .querySelector("meta[name='csrf-token']")
@@ -19,6 +19,7 @@ let liveSocket = new LiveSocket("/live", Socket, {
     CommandPalette: CommandPaletteHook,
     Drag: DragHook,
     AgentChat: AgentChatHook,
+    AgentInput: AgentInputHook,
   },
 });
 

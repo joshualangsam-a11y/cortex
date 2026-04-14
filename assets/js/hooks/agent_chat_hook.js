@@ -1,46 +1,29 @@
 /**
- * AgentChat hook — handles auto-scroll and streaming text for the agent chat UI.
+ * AgentChat — auto-scroll for the message container.
+ * AgentInput — textarea auto-resize + Enter to submit.
  */
 const AgentChatHook = {
   mounted() {
     this.scrollToBottom();
 
-    // Auto-scroll on new content
-    this.handleEvent("text-delta", (_payload) => {
-      this.scrollToBottom();
+    this.handleEvent("text-delta", () => {
+      if (this.isNearBottom()) this.scrollToBottom();
     });
 
-    // Submit form on Enter (handled via phx-keydown, but also trigger from push_event)
-    this.handleEvent("submit-form", () => {
-      const form = this.el.closest("#agent-root")?.querySelector("form");
-      if (form) {
-        form.dispatchEvent(
-          new Event("submit", { bubbles: true, cancelable: true })
-        );
-      }
-    });
-
-    // Observe DOM changes for auto-scroll (new messages added by LiveView)
     this.observer = new MutationObserver(() => {
-      if (this.isNearBottom()) {
-        this.scrollToBottom();
-      }
+      if (this.isNearBottom()) this.scrollToBottom();
     });
 
     this.observer.observe(this.el, { childList: true, subtree: true });
   },
 
   destroyed() {
-    if (this.observer) {
-      this.observer.disconnect();
-    }
+    this.observer?.disconnect();
   },
 
   isNearBottom() {
-    const threshold = 150;
     return (
-      this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight <
-      threshold
+      this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < 150
     );
   },
 
@@ -51,4 +34,41 @@ const AgentChatHook = {
   },
 };
 
+const AgentInputHook = {
+  mounted() {
+    this.el.addEventListener("input", () => this.resize());
+    this.el.addEventListener("keydown", (e) => this.handleKey(e));
+    this.resize();
+  },
+
+  updated() {
+    // Reset height when input is cleared (after submit)
+    if (this.el.value === "" || this.el.textContent === "") {
+      this.el.style.height = "auto";
+    }
+  },
+
+  resize() {
+    this.el.style.height = "auto";
+    this.el.style.height = Math.min(this.el.scrollHeight, 200) + "px";
+  },
+
+  handleKey(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      // Only submit if there's content
+      const value = this.el.value?.trim() || this.el.textContent?.trim();
+      if (value) {
+        const form = this.el.closest("form");
+        if (form) {
+          form.dispatchEvent(
+            new Event("submit", { bubbles: true, cancelable: true })
+          );
+        }
+      }
+    }
+  },
+};
+
 export default AgentChatHook;
+export { AgentInputHook };
