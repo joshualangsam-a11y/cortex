@@ -54,6 +54,7 @@ defmodule CortexWeb.Router do
 
     live "/landing", LandingLive, :index
     get "/", PageController, :home
+    get "/dev/login/:email", DevLoginController, :login
   end
 
   # Stripe webhooks — signature verified by StripeWebhookPlug

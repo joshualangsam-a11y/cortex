@@ -4,7 +4,8 @@ defmodule CortexWeb.Auth.LoginLive do
   alias Cortex.Accounts
 
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, form: to_form(%{"email" => ""}, as: :user), sent: false, page_title: "Login")}
+    {:ok,
+     assign(socket, form: to_form(%{"email" => ""}, as: :user), sent: false, page_title: "Login")}
   end
 
   def handle_event("send_magic_link", %{"user" => %{"email" => email}}, socket) do
@@ -26,13 +27,16 @@ defmodule CortexWeb.Auth.LoginLive do
       token = Accounts.generate_magic_link_token(user)
       magic_url = "/auth/magic/#{token}"
 
-      # For now: flash the URL (no email sending yet)
-      socket =
-        socket
-        |> put_flash(:info, "Magic link: #{magic_url}")
-        |> assign(:sent, true)
+      if Application.get_env(:cortex, :env) == :dev do
+        {:noreply, redirect(socket, to: magic_url)}
+      else
+        socket =
+          socket
+          |> put_flash(:info, "Magic link: #{magic_url}")
+          |> assign(:sent, true)
 
-      {:noreply, socket}
+        {:noreply, socket}
+      end
     else
       {:noreply, put_flash(socket, :error, "Enter your email address.")}
     end

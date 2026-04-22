@@ -2,6 +2,7 @@ defmodule CortexWeb.PageController do
   use CortexWeb, :controller
 
   def home(conn, _params) do
-    redirect(conn, to: "/dashboard")
+    target = if conn.assigns[:current_user], do: "/dashboard", else: "/landing"
+    redirect(conn, to: target)
   end
 end
